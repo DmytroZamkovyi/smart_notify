@@ -1,0 +1,12 @@
+{
+  "domain": "smart_notify",
+  "name": "Smart Notify",
+  "version": "4.0.0",
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "dependencies": ["notify", "http", "frontend", "panel_custom", "websocket_api"],
+  "after_dependencies": ["person", "mobile_app"],
+  "requirements": [],
+  "codeowners": []
+}

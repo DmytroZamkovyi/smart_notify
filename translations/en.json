@@ -1,0 +1,105 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Notify",
+        "description": "Add the integration? Two blocks will appear: Channels and Categories."
+      }
+    },
+    "abort": {
+      "already_configured": "Smart Notify is already added."
+    }
+  },
+  "config_subentries": {
+    "channel": {
+      "entry_type": "Channel",
+      "initiate_flow": {
+        "user": "Add channel",
+        "reconfigure": "Edit channel"
+      },
+      "step": {
+        "user": {
+          "title": "New channel",
+          "data": {
+            "source": "What to connect",
+            "name": "Name (for example, \"Phone\")",
+            "owner": "Owner"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit channel",
+          "data": {
+            "name": "Name",
+            "owner": "Owner"
+          }
+        }
+      },
+      "abort": {
+        "no_sources": "No sources left to add.",
+        "reconfigure_successful": "Channel updated."
+      }
+    },
+    "category": {
+      "entry_type": "Category",
+      "initiate_flow": {
+        "user": "Add category",
+        "reconfigure": "Edit category"
+      },
+      "step": {
+        "user": {
+          "title": "New category",
+          "data": {
+            "id": "ID (lowercase latin, digits, _; used in scripts)",
+            "name": "Name",
+            "icon": "Icon"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit category",
+          "data": {
+            "name": "Name",
+            "icon": "Icon"
+          }
+        }
+      },
+      "error": {
+        "bad_id": "Only lowercase latin letters, digits and _.",
+        "id_exists": "This category already exists."
+      },
+      "abort": {
+        "reconfigure_successful": "Category updated."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Routes",
+        "description": "Choose the user to configure.",
+        "data": {
+          "user": "User"
+        }
+      },
+      "pick": {
+        "title": "Routes: {user}",
+        "description": "Choose what to configure. Current values are shown in the list. When finished, choose \"Save and exit\".",
+        "data": {
+          "target": "What to configure"
+        }
+      },
+      "edit": {
+        "title": "{user}: {target}",
+        "description": "\"Send\" delivers to all channels of the first list at once. If none of them worked, channels of the second list are tried in order until one succeeds.",
+        "data": {
+          "mode": "Mode",
+          "channels": "Send to (all selected at once)",
+          "fallback": "If not delivered: try in order"
+        }
+      }
+    },
+    "abort": {
+      "no_users": "There are no persons in HA.",
+      "routes_on_categories": "Routes are configured in the \"Smart Notify · Categories\" block."
+    }
+  }
+}
