@@ -1,5 +1,7 @@
 # Smart Notify
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=DmytroZamkovyi&repository=smart_notify&category=integration)
+
 A Home Assistant custom integration that gives scripts and automations **one
 notification service** and lets every person decide, per category, **where**
 they want to receive it.
@@ -45,7 +47,7 @@ No helpers, no YAML configuration: everything is set up in the UI.
 
 ## Installation
 
-HACS (custom repository):
+HACS: click the button at the top of this page, or add the repository by hand:
 
 1. HACS, Integrations, three dots, Custom repositories.
 2. Add this repository, category Integration.

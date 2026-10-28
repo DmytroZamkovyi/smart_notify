@@ -1,5 +1,7 @@
 # Smart Notify
 
+[![Відкрити репозиторій у HACS у твоєму Home Assistant.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=DmytroZamkovyi&repository=smart_notify&category=integration)
+
 Користувацька інтеграція Home Assistant: **одна служба сповіщень** для
 скриптів та автоматизацій, а кожна людина сама обирає, **куди** отримувати
 сповіщення за кожною категорією.
@@ -44,7 +46,7 @@ data:
 
 ## Встановлення
 
-HACS (власний репозиторій):
+HACS: натисни кнопку вгорі сторінки або додай репозиторій вручну:
 
 1. HACS, Інтеграції, три крапки, Власні репозиторії.
 2. Додай цей репозиторій, категорія Integration.
@@ -100,33 +102,4 @@ HACS (власний репозиторій):
 | Канал | Що відбувається з `data` |
 |---|---|
 | Телефон (`notify.mobile_app_*`) | Передається як є: `image`, `tag`, `group`, `actions`, `channel`, `ttl`, `priority`, ... |
-| Telegram (notify-сутність Telegram-бота) | Перетворюється на `telegram_bot.send_message` / `send_photo`: `photo` (або `image`), `caption`, `parse_mode`, `keyboard`, `inline_keyboard`, `disable_notification`, `disable_web_page_preview`, `message_tag`, `reply_to_message_id`, `message_thread_id` |
-| Браузер (notify-сутність HTML5) | Перетворюється на `html5.send_message`: `icon`, `badge`, `image`, `tag`, `actions`, `renotify`, `silent`, `require_interaction`, `vibrate`, `ttl`, `urgency`, ... |
-| Інші служби `notify` | Передається як є |
-| Інші notify-сутності | `data` відкидається, лише `title` і `message` |
-
-Ключі для різних типів каналів можна писати разом в одному `data`: кожен канал
-бере свої й ігнорує решту.
-
-## Браузер (HTML5 push)
-
-1. Додай інтеграцію HTML5 Push Notifications.
-2. Відкрий Home Assistant у потрібному браузері через зовнішню HTTPS-адресу.
-3. Профіль користувача, «Цей браузер», увімкни сповіщення, дай пристрою назву,
-   дозволь.
-4. З'явиться notify-сутність. Додай її каналом у Smart Notify, власник це
-   людина, яка користується цим браузером.
-
-Кожна людина підписує свій браузер і має свій канал.
-
-## Обмеження
-
-- Для Telegram і браузера спершу мають бути налаштовані відповідні інтеграції.
-- Якщо видалити канал, який є в маршруті, маршрут його пропустить (у журналі
-  буде попередження).
-- Сторінка `/smart-notify` потребує, щоб обліковий запис HA був прив'язаний
-  до `person`.
-
-## Ліцензія
-
-MIT
+| Telegram
