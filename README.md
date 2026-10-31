@@ -159,7 +159,7 @@ gets its own, Telegram its own).
 | `actions` | Buttons: `{title, id}` or a link button `{title, url}` |
 | `tag` | Replaces the previous notification with the same tag |
 | `priority` | `low`, `normal`, `high`, `critical` |
-| `format` | `plain` (default), `html`, `markdown` (Telegram) |
+| `format` | `plain` (default), `html`, `markdown` (Telegram). With `html`, tags are kept for Telegram and the phone (Android shows basic tags) and removed for the browser, the HA panel and other notify services (`<br>` becomes a new line); a `parse_mode` in the channel's own data is left untouched. iOS shows tags literally. |
 | `sticky` | The notification is not dismissed by a tap |
 | `clear` | With `tag`: remove that notification from the phone |
 | `expire` | Lifetime: seconds or `30m`, `2h`, `1d` |

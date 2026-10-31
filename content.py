@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
@@ -288,6 +289,21 @@ def with_progress(message: str, progress: dict | None) -> str:
         return message
     bar = progress_bar(progress["percent"])
     return f"{message}\n{bar}" if message else bar
+
+
+_BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
+_BLOCK_END_RE = re.compile(r"<\s*/\s*(p|div|li)\s*>", re.IGNORECASE)
+_TAG_RE = re.compile(r"</?[a-zA-Z][^<>]*>")
+
+
+def strip_html(text: str) -> str:
+    """Прибирає HTML-теги для каналів, які їх не показують (<br> і кінці блоків дають новий рядок)."""
+    if not text or "<" not in text:
+        return html.unescape(text) if text and "&" in text else text
+    out = _BR_RE.sub("\n", text)
+    out = _BLOCK_END_RE.sub("\n", out)
+    out = _TAG_RE.sub("", out)
+    return html.unescape(out)
 
 
 def escape_html(text: str) -> str:

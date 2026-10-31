@@ -89,6 +89,19 @@ class Msg:
     def body(self) -> str:
         return f"{self.message}\n({self.note})" if self.note else self.message
 
+    @property
+    def is_html(self) -> bool:
+        return self.std.get("format") == "html"
+
+    @property
+    def plain_body(self) -> str:
+        """Текст без HTML для каналів, які теги не показують (браузер, панель HA, інші notify)."""
+        return content.strip_html(self.body) if self.is_html else self.body
+
+    @property
+    def plain_title(self) -> str | None:
+        return content.strip_html(self.title) if self.title and self.is_html else self.title
+
 
 # ---------------------------------------------------------------- допоміжне
 
@@ -551,10 +564,10 @@ async def deliver_html5(hass: HomeAssistant, entity_id: str, m: Msg) -> list[dic
         if k in extra:
             data[k] = extra[k]
 
-    message = m.body
+    message = m.plain_body
     if prog and prog["percent"] < 100:
         message = f"{message}\n{content.progress_bar(prog['percent'])}"
-    data["title"] = m.title or "Home Assistant"
+    data["title"] = m.plain_title or "Home Assistant"
     data["message"] = message
     await hass.services.async_call(
         "html5", "send_message", data, target={"entity_id": entity_id}, blocking=True
@@ -568,14 +581,18 @@ async def deliver_html5(hass: HomeAssistant, entity_id: str, m: Msg) -> list[dic
 async def deliver_generic_service(hass: HomeAssistant, service: str, m: Msg) -> list[dict]:
     if m.std.get("clear"):
         return []
-    out: dict[str, Any] = {"message": m.body}
-    if m.title:
-        out["title"] = m.title
+    # свій parse_mode у data каналу означає, що сервіс сам розбирає розмітку
+    strip = m.is_html and "parse_mode" not in m.raw
+    body = m.plain_body if strip else m.body
+    out: dict[str, Any] = {"message": body}
+    title = m.plain_title if strip else m.title
+    if title:
+        out["title"] = title
     if service == "persistent_notification":
         nid = f"smart_notify_{m.tag}" if m.tag else f"smart_notify_{m.id}"
         prog = m.std.get("progress")
         if prog and prog["percent"] < 100:
-            out["message"] = f"{m.body}\n{content.progress_bar(prog['percent'])}"
+            out["message"] = f"{body}\n{content.progress_bar(prog['percent'])}"
         out["data"] = {"notification_id": nid}
         await hass.services.async_call("notify", service, out, blocking=True)
         return [{"kind": "persistent", "nid": nid}]
@@ -598,9 +615,9 @@ async def persistent_dismiss(hass: HomeAssistant, ref: dict) -> None:
 async def deliver_generic_entity(hass: HomeAssistant, entity_id: str, m: Msg) -> list[dict]:
     if m.std.get("clear"):
         return []
-    data = {"entity_id": entity_id, "message": m.body}
-    if m.title:
-        data["title"] = m.title
+    data = {"entity_id": entity_id, "message": m.plain_body}
+    if m.plain_title:
+        data["title"] = m.plain_title
     await hass.services.async_call("notify", "send_message", data, blocking=True)
     return []
 
