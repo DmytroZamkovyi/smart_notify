@@ -28,6 +28,7 @@ STANDARD_KEYS = (
     "clear",
     "expire",
     "progress",
+    "repeat",
 )
 
 _PRIORITY_ALIASES = {
@@ -133,6 +134,45 @@ def parse_actions(v: Any) -> list[dict]:
     return out
 
 
+ACTION_PREFIX = "sn_"
+TOKEN_LEN = 8
+
+
+def encode_action(token: str, action_id: str) -> str:
+    """Ідентифікатор кнопки в каналі: sn_<токен 8 символів>_<id>."""
+    return f"{ACTION_PREFIX}{token}_{action_id}"
+
+
+def decode_action(raw: Any) -> tuple[str, str] | None:
+    """(токен, id кнопки) із sn_<токен>_<id> (також із початковим «/»), інакше None."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lstrip("/")
+    if not s.startswith(ACTION_PREFIX):
+        return None
+    body = s[len(ACTION_PREFIX):]
+    if len(body) < TOKEN_LEN + 2 or body[TOKEN_LEN] != "_":
+        return None
+    return body[:TOKEN_LEN], body[TOKEN_LEN + 1:]
+
+
+def parse_repeat(v: Any) -> dict | None:
+    """Повтор до підтвердження: true або {every, max}. Повертає {"every": сек|None, "max": int|None}."""
+    if v is True:
+        return {"every": None, "max": None}
+    if not isinstance(v, dict):
+        return None
+    every = parse_duration(v.get("every"))
+    mx = v.get("max")
+    try:
+        mx = int(mx) if mx is not None and not isinstance(mx, bool) else None
+    except (TypeError, ValueError):
+        mx = None
+    if mx is not None and mx < 1:
+        mx = None
+    return {"every": every, "max": mx}
+
+
 def parse_data(data: Any) -> tuple[dict, dict]:
     """Розділяє `data` на стандартну частину й решту (специфічні ключі каналів).
 
@@ -166,6 +206,9 @@ def parse_data(data: Any) -> tuple[dict, dict]:
     progress = parse_progress(data.get("progress"))
     if progress:
         std["progress"] = progress
+    repeat = parse_repeat(data.get("repeat"))
+    if repeat is not None:
+        std["repeat"] = repeat
     extra = {k: v for k, v in data.items() if k not in STANDARD_KEYS}
     return std, extra
 

@@ -16,7 +16,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from . import content, quiet
-from .channels import Msg, clear_refs, deliver
+from .channels import Msg, clear_refs, deliver, persistent_dismiss
 from .const import COMMON, DOMAIN, FALLBACK_SOURCE
 from .helpers import (
     PERSISTENT,
@@ -44,6 +44,8 @@ from .routing import (
 _LOGGER = logging.getLogger(__name__)
 
 PERSISTENT_NAME = "Панель HA"
+EVENT_ACTION = "smart_notify_action"
+TOKEN_TTL = 7 * 86400
 JOURNAL_MAX = 200
 STORE_VERSION = 1
 
@@ -53,7 +55,15 @@ class State:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.state")
-        self.data: dict[str, Any] = {"journal": [], "queue": [], "expiry": [], "progress": {}}
+        self.data: dict[str, Any] = {
+            "journal": [],
+            "queue": [],
+            "expiry": [],
+            "progress": {},
+            "tokens": {},
+            "repeats": [],
+            "retries": [],
+        }
 
     async def load(self) -> None:
         loaded = await self._store.async_load()
@@ -101,6 +111,8 @@ class Notifier:
         self.state = State(hass)
         self._dedup: dict[str, float] = {}
         self._timers: dict[str, Any] = {}
+        self._rtimers: dict[str, Any] = {}
+        self._unsubs: list = []
         self._unsub_tick = None
 
     # ------------------------------------------------------------ життєвий цикл
@@ -113,17 +125,30 @@ class Notifier:
         now = time.time()
         for rec in list(self.state.data["expiry"]):
             self._schedule_expiry(rec, max(rec["at"] - now, 1))
+        self._prune_tokens(now)
+        for kind, key in (("repeat", "repeats"), ("retry", "retries")):
+            for rec in list(self.state.data[key]):
+                self._sched(kind, rec, max(rec["at"] - now, 1))
+        bus = self.hass.bus
+        self._unsubs = [
+            bus.async_listen("mobile_app_notification_action", self._ev_phone),
+            bus.async_listen("html5_notification.clicked", self._ev_browser),
+            bus.async_listen("telegram_callback", self._ev_telegram),
+        ]
 
     @callback
     def async_stop(self) -> None:
         if self._unsub_tick:
             self._unsub_tick()
             self._unsub_tick = None
-        for cancel in self._timers.values():
+        for cancel in (*self._timers.values(), *self._rtimers.values(), *self._unsubs):
             cancel()
         self._timers.clear()
+        self._rtimers.clear()
+        self._unsubs = []
 
     async def _tick(self, _now: datetime) -> None:
+        self._prune_tokens(time.time())
         await self.flush()
 
     # ------------------------------------------------------------------ журнал
@@ -215,12 +240,22 @@ class Notifier:
         return run.attempted[source]
 
     async def _deliver_user(
-        self, run: _Run, channels: dict, cats: dict, user: str, m: Msg
+        self,
+        run: _Run,
+        channels: dict,
+        cats: dict,
+        user: str,
+        m: Msg,
+        last_resort: bool = True,
     ) -> dict:
-        """Доставка одній людині за її маршрутом (без перевірки тихих годин)."""
+        """Доставка одній людині за її маршрутом (без перевірки тихих годин).
+
+        ok: чи спрацював хоч один справжній канал (без аварійної панелі HA);
+        persist: посилання на аварійне персистентне сповіщення, якщо його створено.
+        """
         plan = self._plan(channels, cats, user, m.category)
         if plan is None:
-            return {"user": user, "status": "off", "channels": []}
+            return {"user": user, "status": "off", "channels": [], "ok": True, "persist": []}
         primary, fallback = plan
         rec: list[dict] = []
         ok = False
@@ -232,14 +267,273 @@ class Notifier:
                 if await self._attempt(run, name, source, m, rec):
                     ok = True
                     break
-        if not ok and FALLBACK_SOURCE not in run.attempted:
+        persist: list[dict] = []
+        if not ok and last_resort and FALLBACK_SOURCE not in run.attempted:
             _LOGGER.error("Жоден канал не спрацював для %s, надсилаю в панель HA", user)
+            before = len(run.refs)
             await self._attempt(run, PERSISTENT_NAME, FALLBACK_SOURCE, m, rec)
+            persist = [r for r in run.refs[before:] if r.get("kind") == "persistent"]
         return {
             "user": user,
             "status": "sent" if any(r["status"] == "sent" for r in rec) else "failed",
             "channels": rec,
+            "ok": ok,
+            "persist": persist,
         }
+
+    async def _deliver_common(self, run: _Run, channels: dict, m: Msg) -> dict:
+        rec: list[dict] = []
+        ok = False
+        for c in (c for c in channels.values() if c["owner"] == COMMON):
+            if await self._attempt(run, c["name"], c["source"], m, rec):
+                ok = True
+        return {
+            "user": COMMON,
+            "status": "sent" if ok else "failed",
+            "channels": rec,
+            "ok": ok,
+            "persist": [],
+        }
+
+    async def _deliver_target(
+        self, run: _Run, channels: dict, cats: dict, user: str, m: Msg, last_resort: bool = True
+    ) -> dict:
+        if user == COMMON:
+            return await self._deliver_common(run, channels, m)
+        return await self._deliver_user(run, channels, cats, user, m, last_resort)
+
+    # ------------------------------------------- кнопки, повтор, повтор доставки
+
+    def _prune_tokens(self, now: float) -> None:
+        tokens = self.state.data["tokens"]
+        old = [t for t, v in tokens.items() if now - v.get("ts", 0) > TOKEN_TTL]
+        for t in old:
+            del tokens[t]
+        if old:
+            self.state.save()
+
+    def _prepare(self, m: Msg) -> None:
+        """Токен для кнопок; для повтору без кнопок додається «Підтвердити»."""
+        std = m.std
+        if std.get("repeat") is not None and not any(a.get("id") for a in std.get("actions", [])):
+            std["actions"] = [*std.get("actions", []), {"title": "Підтвердити", "id": "ack"}]
+        if any(a.get("id") for a in std.get("actions", [])):
+            m.token = uuid.uuid4().hex[: content.TOKEN_LEN]
+            self.state.data["tokens"][m.token] = {
+                "user": m.user,
+                "category": m.category,
+                "tag": m.tag,
+                "id": m.id,
+                "ts": time.time(),
+            }
+            self.state.save()
+
+    def _record(self, m: Msg) -> dict:
+        return {
+            "id": uuid.uuid4().hex[:8],
+            "nid": m.id,
+            "user": m.user,
+            "category": m.category,
+            "title": m.title,
+            "message": m.message,
+            "std": dict(m.std),
+            "extra": dict(m.extra),
+            "raw": dict(m.raw),
+            "token": m.token,
+            "count": 0,
+        }
+
+    def _msg_from(self, rec: dict, cats: dict) -> Msg | None:
+        if rec["category"] not in cats:
+            return None
+        m = self._make_msg(
+            rec["nid"], cats, rec["category"], rec["title"], rec["message"],
+            rec["std"], rec["extra"], rec["raw"], rec["user"],
+        )
+        m.token = rec.get("token", "")
+        return m
+
+    def _sched(self, kind: str, rec: dict, delay: float) -> None:
+        key = f"{kind}:{rec['id']}"
+        if key in self._rtimers:
+            self._rtimers.pop(key)()
+
+        async def _fire(_now: datetime) -> None:
+            self._rtimers.pop(key, None)
+            if kind == "repeat":
+                await self._repeat_fire(rec)
+            else:
+                await self._retry_fire(rec)
+
+        self._rtimers[key] = async_call_later(self.hass, delay, _fire)
+
+    def _drop(self, kind: str, rec: dict) -> None:
+        lst = self.state.data["repeats" if kind == "repeat" else "retries"]
+        if rec in lst:
+            lst.remove(rec)
+            self.state.save()
+        cancel = self._rtimers.pop(f"{kind}:{rec['id']}", None)
+        if cancel:
+            cancel()
+
+    def _start_repeat(self, m: Msg) -> None:
+        rep = m.std.get("repeat")
+        if rep is None:
+            return
+        st = settings_of(self.hass)
+        every = rep.get("every") or st["repeat_every_min"] * 60
+        mx = rep.get("max") or st["repeat_max"]
+        rec = self._record(m)
+        now = time.time()
+        rec.update({"every": every, "max": mx, "at": now + every})
+        if m.std.get("expire"):
+            rec["expire_at"] = now + m.std["expire"]
+        self.state.data["repeats"].append(rec)
+        self.state.save()
+        self._sched("repeat", rec, every)
+
+    def _start_retry(self, m: Msg, persist: list[dict]) -> None:
+        st = settings_of(self.hass)
+        every = st["retry_every_min"] * 60
+        rec = self._record(m)
+        now = time.time()
+        rec.update(
+            {
+                "every": every,
+                "max": st["retry_max"],
+                "at": now + every,
+                "attempt": 0,
+                "persist": persist,
+            }
+        )
+        if m.std.get("expire"):
+            rec["expire_at"] = now + m.std["expire"]
+        self.state.data["retries"].append(rec)
+        self.state.save()
+        self._sched("retry", rec, every)
+
+    def _after(self, m: Msg, res: dict) -> None:
+        """Після доставки: повтор до підтвердження або повтор доставки при збої."""
+        if res.get("status") in ("off",):
+            return
+        if res.get("ok"):
+            self._start_repeat(m)
+        elif m.std.get("clear") is not True:
+            self._start_retry(m, res.get("persist", []))
+
+    async def _repeat_fire(self, rec: dict) -> None:
+        if rec not in self.state.data["repeats"]:
+            return
+        now = time.time()
+        cats = category_tree(self.hass)
+        m = self._msg_from(rec, cats)
+        if m is None or (rec.get("expire_at") and now > rec["expire_at"]):
+            self._drop("repeat", rec)
+            return
+        if rec["user"] != COMMON:
+            cfg = self._quiet_cfg(rec["user"])
+            if cfg["enabled"] and self._is_quiet(cfg) and quiet.behavior_for(cfg, m.priority) != "pass":
+                self._sched("repeat", rec, rec["every"])  # тихі години: не рахуємо, чекаємо
+                return
+        rec["count"] += 1
+        m.note = f"повтор {rec['count']}"
+        await self._deliver_target(_Run(), channels_of(self.hass), cats, rec["user"], m, False)
+        if rec["count"] >= rec["max"]:
+            self._drop("repeat", rec)
+        else:
+            rec["at"] = now + rec["every"]
+            self.state.save()
+            self._sched("repeat", rec, rec["every"])
+
+    async def _retry_fire(self, rec: dict) -> None:
+        if rec not in self.state.data["retries"]:
+            return
+        now = time.time()
+        cats = category_tree(self.hass)
+        m = self._msg_from(rec, cats)
+        if m is None or (rec.get("expire_at") and now > rec["expire_at"]):
+            self._drop("retry", rec)
+            return
+        rec["attempt"] += 1
+        res = await self._deliver_target(_Run(), channels_of(self.hass), cats, rec["user"], m, False)
+        if res.get("ok"):
+            for ref in rec.get("persist", []):
+                try:
+                    await persistent_dismiss(self.hass, ref)
+                except Exception:  # noqa: BLE001
+                    _LOGGER.warning("Не вдалося закрити аварійне сповіщення", exc_info=True)
+            self._drop("retry", rec)
+            self._journal(
+                {
+                    "ts": now, "id": rec["nid"], "category": rec["category"],
+                    "title": _short(rec["title"] or "", 80),
+                    "message": _short(rec["message"], 200),
+                    "priority": rec["std"].get("priority", "normal"),
+                    "test": False, "retry": rec["attempt"],
+                    "results": [{"user": rec["user"], "status": "retry_sent", "channels": res["channels"]}],
+                }
+            )
+            m.note = ""
+            self._start_repeat(m)
+        elif rec["attempt"] >= rec["max"]:
+            _LOGGER.error(
+                "Не вдалося доставити %s для %s після %s повторів", rec["category"], rec["user"], rec["attempt"]
+            )
+            self._drop("retry", rec)
+        else:
+            rec["at"] = now + rec["every"]
+            self.state.save()
+            self._sched("retry", rec, rec["every"])
+
+    @callback
+    def _ev_phone(self, event: Any) -> None:
+        self._on_action("phone", event.data.get("action"), event)
+
+    @callback
+    def _ev_browser(self, event: Any) -> None:
+        self._on_action("browser", event.data.get("action"), event)
+
+    @callback
+    def _ev_telegram(self, event: Any) -> None:
+        self._on_action("telegram", event.data.get("data"), event)
+
+    def _on_action(self, channel: str, raw: Any, event: Any) -> None:
+        dec = content.decode_action(raw)
+        if dec is None:
+            return
+        token, action_id = dec
+        info = self.state.data["tokens"].get(token)
+        if info is None:
+            return
+        for rec in [r for r in self.state.data["repeats"] if r.get("token") == token]:
+            self._drop("repeat", rec)
+        user = info["user"]
+        self.hass.bus.async_fire(
+            EVENT_ACTION,
+            {
+                "id": action_id,
+                "person": user,
+                "category": info["category"],
+                "tag": info.get("tag"),
+                "channel": channel,
+                "notification_id": info["id"],
+            },
+        )
+        if channel == "telegram" and event.data.get("id"):
+            self.hass.async_create_task(self._tg_answer(event.data["id"]))
+
+    async def _tg_answer(self, callback_id: str) -> None:
+        if not self.hass.services.has_service("telegram_bot", "answer_callback_query"):
+            return
+        try:
+            await self.hass.services.async_call(
+                "telegram_bot",
+                "answer_callback_query",
+                {"message": "Прийнято", "callback_query_id": callback_id},
+                blocking=True,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Не вдалося відповісти на callback", exc_info=True)
 
     def _make_msg(
         self, nid: str, cats: dict, cat: str, title, message, std, extra, raw, user: str
@@ -322,16 +616,10 @@ class Notifier:
                 results.append({"user": COMMON, "status": "off", "channels": []})
             else:
                 m = self._make_msg(nid, cats, cat, title, message, std, extra, raw, COMMON)
-                rec: list[dict] = []
-                for c in (c for c in channels.values() if c["owner"] == COMMON):
-                    await self._attempt(run, c["name"], c["source"], m, rec)
-                results.append(
-                    {
-                        "user": COMMON,
-                        "status": "sent" if any(r["status"] == "sent" for r in rec) else "failed",
-                        "channels": rec,
-                    }
-                )
+                self._prepare(m)
+                res = await self._deliver_common(run, channels, m)
+                self._after(m, res)
+                results.append(res)
         else:
             for u in users:
                 if not person_ok(u):
@@ -357,7 +645,10 @@ class Notifier:
                     continue
                 if action == "silent":
                     m.silent = True
-                results.append(await self._deliver_user(run, channels, cats, u, m))
+                self._prepare(m)
+                res = await self._deliver_user(run, channels, cats, u, m)
+                self._after(m, res)
+                results.append(res)
 
         if std.get("expire") and run.refs:
             self._register_expiry(nid, std["expire"], run.refs)
@@ -384,6 +675,9 @@ class Notifier:
                 ],
             }
         )
+        for r in results:
+            r.pop("ok", None)
+            r.pop("persist", None)
         return {"id": nid, "delivered": delivered, "results": results}
 
     # ------------------------------------------------------------ відкладені
@@ -454,7 +748,9 @@ class Notifier:
                     q["extra"], q["raw"], user,
                 )
                 m.note = dt_util.as_local(datetime.fromtimestamp(q["ts"], dt_util.UTC)).strftime("%H:%M")
+                self._prepare(m)
                 res = await self._deliver_user(run, channels, cats, user, m)
+                self._after(m, res)
                 self._journal_flush(q, res)
             for cat, items in digests.items():
                 run = _Run()

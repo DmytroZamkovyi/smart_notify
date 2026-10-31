@@ -117,7 +117,13 @@ def available_sources(hass: HomeAssistant) -> dict[str, str]:
     return out
 
 
-DEFAULT_SETTINGS = {"expire_hours": 24}
+DEFAULT_SETTINGS = {
+    "expire_hours": 24,
+    "repeat_every_min": 10,
+    "repeat_max": 20,
+    "retry_every_min": 2,
+    "retry_max": 5,
+}
 
 
 def settings_of(hass: HomeAssistant) -> dict:
@@ -125,10 +131,11 @@ def settings_of(hass: HomeAssistant) -> dict:
     e = entry_of(hass, KIND_CATEGORIES)
     raw = e.options.get("settings", {}) if e else {}
     out = dict(DEFAULT_SETTINGS)
-    try:
-        hours = float(raw.get("expire_hours", out["expire_hours"]))
-        if hours > 0:
-            out["expire_hours"] = hours
-    except (TypeError, ValueError):
-        pass
+    for key in DEFAULT_SETTINGS:
+        try:
+            val = float(raw.get(key, out[key]))
+        except (TypeError, ValueError):
+            continue
+        if val > 0:
+            out[key] = val if key in ("expire_hours",) else int(val)
     return out

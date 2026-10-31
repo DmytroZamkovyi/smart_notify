@@ -132,9 +132,13 @@
       },
       "settings": {
         "title": "General settings",
-        "description": "How many hours a deferred notification stays relevant. Can be overridden per call with expire.",
+        "description": "Lifetime of deferred notifications, repeat until confirmed (`repeat` in data) and delivery retry on failure. Repeat can be overridden per call.",
         "data": {
-          "expire_hours": "Deferred notification lifetime (h)"
+          "expire_hours": "Deferred notification lifetime (h)",
+          "repeat_every_min": "Repeat until confirmed: every (min)",
+          "repeat_max": "Repeat until confirmed: at most (times)",
+          "retry_every_min": "Delivery retry on failure: every (min)",
+          "retry_max": "Delivery retry on failure: at most (times)"
         }
       }
     },

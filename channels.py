@@ -70,6 +70,7 @@ class Msg:
     silent: bool = False
     user: str = ""
     note: str = ""  # наприклад, «02:15» для відкладених
+    token: str = ""  # для кнопок: за ним визначається, хто й що натиснув
     refs: list = field(default_factory=list)
 
     @property
@@ -79,6 +80,10 @@ class Msg:
     @property
     def priority(self) -> str:
         return self.std.get("priority", "normal")
+
+    def action_id(self, action: dict) -> str:
+        aid = action.get("id", "")
+        return content.encode_action(self.token, aid) if self.token else aid
 
     @property
     def body(self) -> str:
@@ -251,7 +256,7 @@ def phone_payload(hass: HomeAssistant, m: Msg) -> dict:
         if a.get("url"):
             actions.append({"action": "URI", "title": a["title"], "uri": a["url"]})
         else:
-            actions.append({"action": a["id"], "title": a["title"]})
+            actions.append({"action": m.action_id(a), "title": a["title"]})
     if actions:
         data["actions"] = actions
 
@@ -339,7 +344,7 @@ def _tg_keyboard(m: Msg) -> list | None:
         if a.get("url"):
             rows.append(f"{clean(a['title'])}:{a['url']}")
         else:
-            rows.append(f"{clean(a['title'])}:/{a['id']}")
+            rows.append(f"{clean(a['title'])}:/{m.action_id(a)}")
     return rows or None
 
 
@@ -536,7 +541,8 @@ async def deliver_html5(hass: HomeAssistant, entity_id: str, m: Msg) -> list[dic
         data["data"] = {"url": std["url"]}
     if std.get("actions"):
         data["actions"] = [
-            {"action": a.get("id") or "open", "title": a["title"]} for a in std["actions"]
+            {"action": m.action_id(a) if a.get("id") else "open", "title": a["title"]}
+            for a in std["actions"]
         ][:2]
     for k in (*HTML5_PASSTHROUGH, "image", "tag", "actions"):
         if k in extra:

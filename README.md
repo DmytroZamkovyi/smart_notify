@@ -235,6 +235,38 @@ original time, more than that as one summary per category. A deferred
 notification that outlived its `expire` is dropped; without `expire` the default
 lifetime is 24 hours (Options, "General settings").
 
+## Buttons, repeat until confirmed, delivery retry (5.2)
+
+**Button event.** Every button with an `id` fires one event, whatever the channel
+(phone, Telegram, browser):
+
+```yaml
+trigger: event
+event_type: smart_notify_action
+event_data: {id: ok}
+```
+
+Event fields: `id` (button id), `person` (the person whose notification it was,
+or `common` for the common channel), `category`, `tag`, `channel` (`phone`,
+`telegram`, `browser`), `notification_id`. Buttons are matched by a hidden token,
+so a button of someone else's or an old notification does nothing; tokens live 7 days.
+
+**Repeat until confirmed.** `repeat: true` or `repeat: {every: 10m, max: 20}` in
+`data` resends the notification until any of its buttons is pressed (a "Confirm"
+button is added if there are no buttons). For the common channel any press stops
+it, for a personal channel only that person's press. Defaults are in Options,
+"General settings" (10 min, 20 times). Repeats stop at `expire`, and are held
+during quiet hours (except `critical`).
+
+**Delivery retry.** If every channel of a person failed, a persistent notification
+appears in HA at once (as before) and delivery is retried every 2 minutes, at most
+5 times (Options). When a retry succeeds, that persistent notification is
+removed; after the last failed retry it stays. Retries stop at `expire`.
+
+The button event names come from the Companion app
+(`mobile_app_notification_action`), Telegram (`telegram_callback`) and
+HTML5 push (`html5_notification.clicked`).
+
 ## Duplicates, journal, test
 
 - **Duplicates**: a category has "Do not repeat an identical notification
@@ -244,6 +276,12 @@ lifetime is 24 hours (Options, "General settings").
   on `/smart-notify`.
 - **Test**: the "Send test" button on `/smart-notify` sends through the person's
   real routes and quiet hours for a chosen category and priority.
+
+## Upgrading to 5.2
+
+No breaking changes. Button ids in `actions` are now wrapped for the channel (the
+phone receives `sn_<token>_<id>`); use the `smart_notify_action` event instead of
+the channel's own button events for such buttons.
 
 ## Upgrading to 5.1
 

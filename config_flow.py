@@ -402,16 +402,30 @@ class RoutesFlow(OptionsFlow):
         cur = settings_of(self.hass)
         if user_input is not None:
             new = deepcopy(dict(self.config_entry.options))
-            new["settings"] = {"expire_hours": float(user_input["expire_hours"])}
+            new["settings"] = {
+                "expire_hours": float(user_input["expire_hours"]),
+                "repeat_every_min": int(user_input["repeat_every_min"]),
+                "repeat_max": int(user_input["repeat_max"]),
+                "retry_every_min": int(user_input["retry_every_min"]),
+                "retry_max": int(user_input["retry_max"]),
+            }
             return self.async_create_entry(data=new)
+
+        def num(lo, hi, step, unit):
+            return NumberSelector(
+                NumberSelectorConfig(
+                    min=lo, max=hi, step=step, mode=NumberSelectorMode.BOX,
+                    unit_of_measurement=unit,
+                )
+            )
+
         schema = vol.Schema(
             {
-                vol.Required("expire_hours", default=cur["expire_hours"]): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0.1, max=720, step=0.1, mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="год",
-                    )
-                )
+                vol.Required("expire_hours", default=cur["expire_hours"]): num(0.1, 720, 0.1, "год"),
+                vol.Required("repeat_every_min", default=cur["repeat_every_min"]): num(1, 1440, 1, "хв"),
+                vol.Required("repeat_max", default=cur["repeat_max"]): num(1, 1000, 1, ""),
+                vol.Required("retry_every_min", default=cur["retry_every_min"]): num(1, 1440, 1, "хв"),
+                vol.Required("retry_max", default=cur["retry_max"]): num(1, 1000, 1, ""),
             }
         )
         return self.async_show_form(step_id="settings", data_schema=schema)
