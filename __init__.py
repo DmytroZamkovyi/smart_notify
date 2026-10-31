@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 
@@ -74,6 +75,10 @@ SEND_SCHEMA = vol.Schema(
         vol.Optional("exclude"): vol.All(cv.ensure_list, [cv.string]),
     }
 )
+
+
+def _file_hash(path: Path) -> str:
+    return hashlib.sha1(path.read_bytes()).hexdigest()[:10]
 
 
 def _service_schema(hass: HomeAssistant) -> dict:
@@ -375,9 +380,8 @@ async def _register_common(hass: HomeAssistant) -> None:
                 [StaticPathConfig(STATIC_URL, str(js), False)]
             )
             data["static"] = True
-            data["version"] = int(
-                (await hass.async_add_executor_job(js.stat)).st_mtime
-            )
+            # версія в адресі залежить від вмісту файлу: нова панель завжди має нову адресу
+            data["version"] = await hass.async_add_executor_job(_file_hash, js)
 
         if not data.get("ws"):
             websocket_api.async_register_command(
