@@ -403,8 +403,8 @@ async def deliver_telegram(
     entry_id, _chat = _tg_target(hass, entity_id)
 
     common = {k: m.extra[k] for k in TELEGRAM_PASSTHROUGH if k in m.extra}
-    if m.silent:
-        common["disable_notification"] = True
+    if m.silent or m.priority == "low":
+        common["disable_notification"] = True  # low і «без звуку» тихих годин: без звуку
     keyboard = _tg_keyboard(m)
     if keyboard:
         common["inline_keyboard"] = keyboard
