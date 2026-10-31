@@ -353,24 +353,27 @@ async def _tg_send(
 ) -> dict | None:
     """Надсилає й повертає {"chat_id", "message_id"} першого чату (або None).
 
-    Спершу «config_entry_id + target» (нова схема), а якщо схема її не приймає,
-    «entity_id» (старий спосіб).
+    Спершу «config_entry_id + chat_id», потім «config_entry_id + target» (старіші
+    версії HA), а якщо й вона не підійшла, «entity_id».
     """
     entry_id, chat = _tg_target(hass, entity_id)
     resp = None
     done = False
     if entry_id and chat is not None:
-        try:
-            resp = await _call(
-                hass,
-                "telegram_bot",
-                service,
-                {**data, "config_entry_id": entry_id, "target": [chat]},
-                response=True,
-            )
-            done = True
-        except vol.Invalid:
-            _LOGGER.debug("telegram_bot.%s: нова схема не підійшла, пробую entity_id", service)
+        # chat_id (нова назва), потім target (старі версії HA), потім entity_id
+        for key in ("chat_id", "target"):
+            try:
+                resp = await _call(
+                    hass,
+                    "telegram_bot",
+                    service,
+                    {**data, "config_entry_id": entry_id, key: [chat]},
+                    response=True,
+                )
+                done = True
+                break
+            except vol.Invalid:
+                _LOGGER.debug("telegram_bot.%s: ключ %s не підійшов", service, key)
     if not done:
         resp = await _call(
             hass, "telegram_bot", service, {**data, "entity_id": [entity_id]}, response=True
