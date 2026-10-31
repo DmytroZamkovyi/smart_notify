@@ -26,8 +26,10 @@ No helpers, no YAML configuration: everything is set up in the UI.
 - **Channels**: phones (Companion app), Telegram bots, browsers (HTML5 push)
   or any other `notify` service/entity. Every channel has an owner (a person
   or "Common").
-- **Categories**: created by the admin (security, climate, appliances, ...).
-  Shown as a dropdown in the action form.
+- **Categories and subcategories**: created by the admin (security, climate,
+  power with "schedule changes" and "emergency outages", ...). Shown as a
+  dropdown in the action form. Optional title prefix, admin default (on/off for
+  everybody) and a "service" flag for developer-only categories.
 - **Routes**: per person and per category:
   - disabled;
   - send to **several channels at once**;
@@ -73,7 +75,8 @@ blocks appear:
    - Owner = a person: used only for that person's routes.
    - Owner = "Common": used when `notify.smart` is called without `user`.
 2. **Categories** block, "Add category": an ID (latin, digits, `_`) used in
-   scripts, and a display name.
+   scripts, and a display name. Optional: parent category (makes it a
+   subcategory), title prefix, default for everyone, service flag.
 3. Routes, either way:
    - each person opens `/smart-notify` (log in as that person; the HA user
      must be linked to a `person`);
@@ -93,7 +96,48 @@ blocks appear:
 - Without `user`: all "Common" channels; if there are none, everybody.
 - `user: all` sends to every person.
 - The same channel is never used twice in one call.
-- Unknown category: logged as a warning, general routes apply.
+- `category` is required. An unknown category, or a category that has
+  subcategories, makes the action fail with an error (visible in the
+  automation trace).
+
+## Subcategories, defaults and prefix
+
+A category with subcategories is only a **group**: you cannot send to it, it
+only holds shared settings for its subcategories. In scripts you use the
+subcategory ID, for example `category: emergency_outage` instead of `power`.
+Only one nesting level is supported, and IDs are unique across categories and
+subcategories.
+
+Which setting applies to a person, first match wins:
+
+1. The person's own setting of the subcategory, then of its category (the first
+   one that is not "As in ..."). **Off** means silence, **Send** uses the
+   person's channels. A subcategory set to **Send** wins even if its category
+   is **Off**.
+2. The admin default of the subcategory, then of its category. **Off for
+   everyone** means silence until a person explicitly sets **Send**
+   (use it for a developer-only `dev` category, together with the "service"
+   flag that hides it from users on the settings page).
+3. The person's general route.
+4. Nothing configured, or every channel failed: persistent notification in the
+   HA panel. A deliberate **Off** never creates one.
+
+**Prefix**: the prefix of the category and of the subcategory are joined in
+brackets, for example `[Power][Emergency]`, and put in front of the title. With
+no `title`, the prefix itself becomes the title and `message` stays as is.
+Templates in `title`, `message` and `data` work as usual (Home Assistant renders
+them before calling the action); the prefix itself is plain text.
+
+If you delete a category that has subcategories, they become regular top-level
+categories and a notification tells you so (Home Assistant cannot block that
+delete).
+
+## Upgrading to 5.0
+
+`category` is now mandatory and unknown categories are an error (they used to
+be a log warning). Scripts that call `notify.smart` without a category, or with a
+category that does not exist, must be fixed. Existing categories and routes keep
+working with no migration.
 
 ## Channel types and `data`
 

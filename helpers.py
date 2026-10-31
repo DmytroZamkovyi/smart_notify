@@ -9,14 +9,13 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import slugify
 
 from .const import DOMAIN, EXCLUDED_SERVICES, KIND_CATEGORIES, KIND_CHANNELS
+from .routing import MODES, category_map, norm_setting  # noqa: F401  (реекспорт)
 
 _LOGGER = logging.getLogger(__name__)
 
 # Вбудований «канал»: персистентне сповіщення в панелі HA (доступний усім)
 PERSISTENT = "persistent"
 PERSISTENT_LABEL = "Панель HA (персистентне)"
-
-MODES = ("inherit", "off", "send")
 
 PLATFORM_NAMES = {
     "telegram_bot": "Telegram",
@@ -77,10 +76,16 @@ def channels_of(hass: HomeAssistant) -> dict[str, dict]:
 
 
 def categories_of(hass: HomeAssistant) -> list[dict]:
+    """Сирі дані категорій і підкатегорій (як збережено)."""
     e = entry_of(hass, KIND_CATEGORIES)
     if e is None:
         return []
     return [dict(s.data) for s in e.subentries.values() if s.subentry_type == "category"]
+
+
+def category_tree(hass: HomeAssistant) -> dict[str, dict]:
+    """id -> нормалізована категорія (з parent, prefix, default, service)."""
+    return category_map(categories_of(hass))
 
 
 def routes_of(hass: HomeAssistant) -> dict:
@@ -91,46 +96,6 @@ def routes_of(hass: HomeAssistant) -> dict:
 def persons(hass: HomeAssistant) -> dict[str, str]:
     """object_id person -> ім'я."""
     return {s.object_id: s.name for s in hass.states.async_all("person")}
-
-
-def norm_setting(v, allowed: set[str] | None = None) -> dict:
-    """Нормалізує налаштування маршруту.
-
-    Новий формат: {"mode": inherit|off|send, "channels": [...], "fallback": [...]}.
-    Старий формат (рядок: "default", "off" або id каналу) теж приймається.
-    allowed: якщо задано, лишає лише ці id каналів.
-    """
-    if isinstance(v, dict):
-        mode = v.get("mode", "inherit")
-        channels = v.get("channels", [])
-        fallback = v.get("fallback", [])
-    elif v == "off":
-        mode, channels, fallback = "off", [], []
-    elif v in (None, "", "default"):
-        mode, channels, fallback = "inherit", [], []
-    else:
-        mode, channels, fallback = "send", [v], []
-
-    if mode not in MODES:
-        mode = "inherit"
-
-    def clean(items, banned=()) -> list[str]:
-        out: list[str] = []
-        for x in items if isinstance(items, list) else []:
-            if not isinstance(x, str) or x in out or x in banned:
-                continue
-            if allowed is not None and x not in allowed:
-                continue
-            out.append(x)
-        return out
-
-    channels = clean(channels)
-    fallback = clean(fallback, banned=channels)
-    if mode == "send" and not channels and not fallback:
-        mode = "inherit"
-    if mode != "send":
-        channels, fallback = [], []
-    return {"mode": mode, "channels": channels, "fallback": fallback}
 
 
 def _entity_platform(hass: HomeAssistant, entity_id: str) -> str | None:

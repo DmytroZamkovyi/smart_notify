@@ -14,6 +14,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     IconSelector,
     SelectOptionDict,
     SelectSelector,
@@ -36,13 +37,25 @@ from .helpers import (
     available_sources,
     channels_of,
     entry_of,
-    norm_setting,
     persons,
+)
+from .routing import (
+    DEFAULT_GENERAL,
+    DEFAULT_OFF,
+    admin_off,
+    category_map,
+    group_ids,
+    label as cat_label,
+    norm_setting,
+    ordered_ids,
 )
 
 ID_RE = re.compile(r"^[a-z0-9_]+$")
 GENERAL_KEY = "__general"
 DONE_KEY = "__done"
+
+# необов'язкові ключі підзапису категорії: очищене поле у формі означає «видалити»
+CATEGORY_OPTIONAL = ("icon", "parent", "prefix")
 
 MODE_LABELS = {
     "inherit": "Як у загальному маршруті",
@@ -57,11 +70,18 @@ MODE_LABELS_GENERAL = {
 
 
 def sub_title(hass: HomeAssistant, subentry_type: str, data: dict) -> str:
-    """Канал: «Власник · Назва», категорія: «Назва»."""
+    """Канал: «Власник · Назва», підкатегорія: «Батько › Назва», категорія: «Назва»."""
     if subentry_type == "channel":
         owner = data["owner"]
         label = "Загальний" if owner == COMMON else persons(hass).get(owner, owner)
         return f"{label} · {data['name']}"
+    parent = data.get("parent")
+    if parent:
+        entry = entry_of(hass, KIND_CATEGORIES)
+        if entry is not None:
+            for s in entry.subentries.values():
+                if s.subentry_type == "category" and s.data.get("id") == parent:
+                    return f"{s.data['name']} › {data['name']}"
     return data["name"]
 
 
@@ -178,64 +198,125 @@ class ChannelFlow(ConfigSubentryFlow):
         )
 
 
+def _default_select() -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[DEFAULT_GENERAL, DEFAULT_OFF],
+            mode=SelectSelectorMode.DROPDOWN,
+            translation_key="category_default",
+        )
+    )
+
+
+def _category_data(base: dict, user_input: dict) -> dict:
+    """Збирає дані категорії: необов'язкові поля з форми замінюють старі, порожні прибираються."""
+    data = {k: v for k, v in base.items() if k not in CATEGORY_OPTIONAL}
+    for key in CATEGORY_OPTIONAL:
+        value = user_input.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+        if value:
+            data[key] = value
+    data["name"] = user_input["name"].strip()
+    data["default"] = user_input.get("default", DEFAULT_GENERAL)
+    data["service"] = bool(user_input.get("service", False))
+    return data
+
+
 class CategoryFlow(ConfigSubentryFlow):
+    """Категорія або підкатегорія (з необов'язковим полем «батьківська категорія»)."""
+
+    def _subs(self) -> list[dict]:
+        return [
+            dict(s.data)
+            for s in self._get_entry().subentries.values()
+            if s.subentry_type == "category"
+        ]
+
+    def _parents(self, exclude: str | None = None) -> dict[str, str]:
+        """Категорії верхнього рівня, які можуть бути батьком."""
+        return {
+            c["id"]: c["name"]
+            for c in self._subs()
+            if not c.get("parent") and c["id"] != exclude
+        }
+
+    def _schema(self, with_id: bool, exclude: str | None = None) -> vol.Schema:
+        fields: dict = {}
+        if with_id:
+            fields[vol.Required("id")] = TextSelector()
+        fields[vol.Required("name")] = TextSelector()
+        fields[vol.Optional("icon")] = IconSelector()
+        parents = self._parents(exclude)
+        if parents:
+            fields[vol.Optional("parent")] = _select(parents)
+        fields[vol.Optional("prefix")] = TextSelector()
+        fields[vol.Required("default", default=DEFAULT_GENERAL)] = _default_select()
+        fields[vol.Optional("service", default=False)] = BooleanSelector()
+        return vol.Schema(fields)
+
     async def async_step_user(self, user_input=None):
         errors: dict[str, str] = {}
         if user_input is not None:
             cid = user_input["id"].strip()
-            existing = {
-                s.data["id"]
-                for s in self._get_entry().subentries.values()
-                if s.subentry_type == "category"
-            }
+            existing = {c["id"] for c in self._subs()}
+            parent = (user_input.get("parent") or "").strip()
             if not ID_RE.match(cid):
                 errors["id"] = "bad_id"
             elif cid in existing:
                 errors["id"] = "id_exists"
+            elif parent and parent not in self._parents():
+                errors["parent"] = "bad_parent"
             else:
-                data = {**user_input, "id": cid}
+                data = {**_category_data({"id": cid}, user_input)}
                 return self.async_create_entry(
                     title=sub_title(self.hass, "category", data),
                     data=data,
                     unique_id=cid,
                 )
-        schema = vol.Schema(
-            {
-                vol.Required("id"): TextSelector(),
-                vol.Required("name"): TextSelector(),
-                vol.Optional("icon"): IconSelector(),
-            }
-        )
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input),
+            data_schema=self.add_suggested_values_to_schema(
+                self._schema(with_id=True), user_input
+            ),
             errors=errors,
         )
 
     async def async_step_reconfigure(self, user_input=None):
         sub = self._get_reconfigure_subentry()
+        cid = sub.data["id"]
+        errors: dict[str, str] = {}
         if user_input is not None:
-            new = {**sub.data, **user_input}
-            return self.async_update_and_abort(
-                self._get_entry(),
-                sub,
-                title=sub_title(self.hass, "category", new),
-                data=new,
-            )
-        schema = vol.Schema(
-            {
-                vol.Required("name"): TextSelector(),
-                vol.Optional("icon"): IconSelector(),
-            }
-        )
+            parent = (user_input.get("parent") or "").strip()
+            has_children = any(c.get("parent") == cid for c in self._subs())
+            if parent and parent not in self._parents(exclude=cid):
+                errors["parent"] = "bad_parent"
+            elif parent and has_children:
+                errors["parent"] = "has_children"
+            else:
+                new = _category_data(dict(sub.data), user_input)
+                return self.async_update_and_abort(
+                    self._get_entry(),
+                    sub,
+                    title=sub_title(self.hass, "category", new),
+                    data=new,
+                )
+        suggested = user_input or {
+            **sub.data,
+            "default": sub.data.get("default", DEFAULT_GENERAL),
+            "service": sub.data.get("service", False),
+        }
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=self.add_suggested_values_to_schema(schema, sub.data),
+            data_schema=self.add_suggested_values_to_schema(
+                self._schema(with_id=False, exclude=cid), suggested
+            ),
+            errors=errors,
         )
 
 
 class RoutesFlow(OptionsFlow):
-    """Маршрути: користувач → (загальний або категорія) → режим/канали/резерв."""
+    """Маршрути: користувач → (загальний, категорія чи підкатегорія) → режим/канали/резерв."""
 
     def __init__(self) -> None:
         self._user: str | None = None
@@ -243,18 +324,39 @@ class RoutesFlow(OptionsFlow):
         self._draft: dict = {}
         self._channels: dict[str, str] = {}  # id -> назва (власні + «Панель HA»)
 
-    def _cats(self) -> dict[str, str]:
-        return {
-            s.data["id"]: s.data["name"]
-            for s in self.config_entry.subentries.values()
-            if s.subentry_type == "category"
-        }
+    def _tree(self) -> dict[str, dict]:
+        return category_map(
+            [
+                dict(s.data)
+                for s in self.config_entry.subentries.values()
+                if s.subentry_type == "category"
+            ]
+        )
 
-    def _summary(self, setting: dict, general: bool) -> str:
+    def _cat_title(self, tree: dict[str, dict], cid: str) -> str:
+        """Назва в списку: «Світло (група)», «Світло › Екстрені», службова з поміткою."""
+        title = cat_label(tree, cid)
+        if cid in group_ids(tree):
+            title += " (група)"
+        if tree[cid]["service"]:
+            title += " (службова)"
+        return title
+
+    def _cats(self) -> dict[str, str]:
+        tree = self._tree()
+        return {cid: self._cat_title(tree, cid) for cid in ordered_ids(tree)}
+
+    def _summary(self, setting: dict, cid: str | None) -> str:
+        """Короткий підсумок налаштування для списку (cid=None: загальний маршрут)."""
         if setting["mode"] == "off":
             return "вимкнено"
         if setting["mode"] == "inherit":
-            return "лише панель HA" if general else "як у загальному"
+            if cid is None:
+                return "лише панель HA"
+            tree = self._tree()
+            if admin_off(tree, cid):
+                return "вимкнено типово"
+            return "як у категорії" if tree[cid]["parent"] else "як у загальному"
         names = self._channels
         txt = ", ".join(names.get(c, c) for c in setting["channels"]) or "—"
         if setting["fallback"]:
@@ -262,6 +364,17 @@ class RoutesFlow(OptionsFlow):
                 names.get(c, c) for c in setting["fallback"]
             )
         return txt
+
+    def _mode_labels(self, cid: str | None) -> dict[str, str]:
+        if cid is None:
+            return MODE_LABELS_GENERAL
+        tree = self._tree()
+        labels = dict(MODE_LABELS)
+        if admin_off(tree, cid):
+            labels["inherit"] = "Вимкнено типово (адмін); щоб отримувати, обери «Надсилати»"
+        elif tree[cid]["parent"]:
+            labels["inherit"] = f"Як у категорії «{tree[tree[cid]['parent']]['name']}»"
+        return labels
 
     async def async_step_init(self, user_input=None):
         if self.config_entry.data.get("kind") != KIND_CATEGORIES:
@@ -305,10 +418,10 @@ class RoutesFlow(OptionsFlow):
 
         options = {
             GENERAL_KEY: "Загальний маршрут: "
-            + self._summary(self._draft["default"], True)
+            + self._summary(self._draft["default"], None)
         }
         for cid, name in self._cats().items():
-            options[cid] = f"{name}: " + self._summary(self._draft["cats"][cid], False)
+            options[cid] = f"{name}: " + self._summary(self._draft["cats"][cid], cid)
         options[DONE_KEY] = "✓ Зберегти й вийти"
 
         return self.async_show_form(
@@ -342,7 +455,7 @@ class RoutesFlow(OptionsFlow):
                 self._draft["cats"][self._target] = new
             return await self.async_step_pick()
 
-        modes = MODE_LABELS_GENERAL if general else MODE_LABELS
+        modes = self._mode_labels(None if general else self._target)
         schema = vol.Schema(
             {
                 vol.Required("mode"): _select(modes),

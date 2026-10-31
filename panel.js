@@ -3,8 +3,15 @@ const PERSISTENT = "persistent";
 
 const empty = () => ({ mode: "inherit", channels: [], fallback: [] });
 
-const MODES_CAT = [
-  { value: "inherit", label: "Як у загальному маршруті" },
+const modesCat = (c) => [
+  {
+    value: "inherit",
+    label: c.admin_off
+      ? "Вимкнено типово (щоб отримувати, обери «Надсилати»)"
+      : c.parent
+        ? `Як у категорії «${c.parent_name}»`
+        : "Як у загальному маршруті",
+  },
   { value: "off", label: "Вимкнено" },
   { value: "send", label: "Надсилати" },
 ];
@@ -46,6 +53,7 @@ class SmartNotifyPanel extends HTMLElement {
         ha-card { padding:16px; display:block; }
         ha-card h3 { margin:0 0 12px; font-weight:500; }
         #list { display:grid; gap:16px; }
+        ha-card.sub { margin-left:16px; border-left:3px solid var(--primary-color); }
       </style>
       <div class="bar">
         <ha-menu-button></ha-menu-button>
@@ -134,8 +142,11 @@ class SmartNotifyPanel extends HTMLElement {
       this._cfg[c.id] = { ...empty(), ...((route.cats || {})[c.id] || {}) };
     });
 
-    this._renderTarget(GENERAL, "Загальний маршрут (усі категорії без свого)", true);
-    d.categories.forEach((c) => this._renderTarget(c.id, c.name, false));
+    this._renderTarget(GENERAL, "Загальний маршрут (усі категорії без свого)", true, null);
+    d.categories.forEach((c) => {
+      const title = c.parent ? c.name : c.group ? `${c.name} (група)` : c.name;
+      this._renderTarget(c.id, title + (c.service ? " (службова)" : ""), false, c);
+    });
 
     if (!(d.channels[u] || []).length) {
       const hint = document.createElement("div");
@@ -146,7 +157,7 @@ class SmartNotifyPanel extends HTMLElement {
     }
   }
 
-  _schema(key, general) {
+  _schema(key, general, cat) {
     const select = (multiple) => ({
       select: { mode: "dropdown", multiple, options: this._chOptions },
     });
@@ -154,7 +165,7 @@ class SmartNotifyPanel extends HTMLElement {
       {
         name: "mode",
         selector: {
-          select: { mode: "dropdown", options: general ? MODES_GEN : MODES_CAT },
+          select: { mode: "dropdown", options: general ? MODES_GEN : modesCat(cat) },
         },
       },
     ];
@@ -167,11 +178,19 @@ class SmartNotifyPanel extends HTMLElement {
     return schema;
   }
 
-  _renderTarget(key, title, general) {
+  _renderTarget(key, title, general, cat) {
     const card = document.createElement("ha-card");
+    if (cat && cat.parent) card.classList.add("sub");
     const h = document.createElement("h3");
-    h.textContent = title;
+    h.textContent = cat && cat.parent ? `${cat.parent_name} › ${title}` : title;
     card.appendChild(h);
+    if (cat && cat.group) {
+      const note = document.createElement("div");
+      note.className = "msg";
+      note.textContent =
+        "Група: ці налаштування діють на всі її підкатегорії, де не задано своє.";
+      card.appendChild(note);
+    }
 
     const f = document.createElement("ha-form");
     f.hass = this._hass;
@@ -187,7 +206,7 @@ class SmartNotifyPanel extends HTMLElement {
           "Використовується лише коли жоден з основних каналів не спрацював. Порядок як вибрано.",
       })[s.name] || "";
     const draw = () => {
-      f.schema = this._schema(key, general);
+      f.schema = this._schema(key, general, cat);
       f.data = this._cfg[key];
     };
     draw();

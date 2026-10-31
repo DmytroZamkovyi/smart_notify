@@ -7,11 +7,17 @@ from pathlib import Path
 
 import voluptuous as vol
 
-from homeassistant.components import frontend, panel_custom, websocket_api
+from homeassistant.components import (
+    frontend,
+    panel_custom,
+    persistent_notification,
+    websocket_api,
+)
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.start import async_at_started
@@ -29,13 +35,26 @@ from .const import (
 )
 from .helpers import (
     PERSISTENT,
-    categories_of,
+    category_tree,
     channels_of,
     deliver,
     entry_of,
-    norm_setting,
     persons,
     routes_of,
+)
+from .routing import (
+    ERR_GROUP,
+    ERR_UNKNOWN,
+    admin_off,
+    apply_prefix,
+    check_callable,
+    children_of,
+    group_ids,
+    label,
+    norm_setting,
+    ordered_ids,
+    prefix_of,
+    resolve_setting,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,8 +75,18 @@ SEND_SCHEMA = vol.Schema(
 
 
 def _service_schema(hass: HomeAssistant) -> dict:
-    """Опис сервісу для форми в UI: користувачі й категорії зі списку."""
-    cats = sorted(categories_of(hass), key=lambda c: c["name"].lower())
+    """Опис сервісу для форми в UI: користувачі й категорії зі списку.
+
+    У списку лише категорії, на які можна надсилати: підкатегорії (під батьком)
+    і звичайні категорії без підкатегорій. Категорії-групи не показуються.
+    """
+    cats = category_tree(hass)
+    groups = group_ids(cats)
+    options = [
+        {"value": i, "label": label(cats, i)}
+        for i in ordered_ids(cats)
+        if i not in groups
+    ]
     return {
         "name": "Надіслати сповіщення (за маршрутами)",
         "description": "Надсилає сповіщення за маршрутами користувачів.",
@@ -70,11 +99,11 @@ def _service_schema(hass: HomeAssistant) -> dict:
             },
             "category": {
                 "name": "Категорія",
-                "description": "Ідентифікатор категорії.",
+                "description": "Категорія без підкатегорій або підкатегорія.",
                 "required": True,
                 "selector": {
                     "select": {
-                        "options": [{"value": c["id"], "label": c["name"]} for c in cats],
+                        "options": options,
                         "custom_value": True,
                         "mode": "dropdown",
                     }
@@ -118,12 +147,13 @@ def _source_of(channels: dict, cid: str) -> tuple[str, str] | None:
     return (ch["name"], ch["source"])
 
 
-def _plan(hass: HomeAssistant, channels: dict, user: str, cat: str):
-    """(основні, резервні) пари (назва, джерело) або None, якщо вимкнено."""
-    r = routes_of(hass).get(user, {})
-    s = norm_setting(r.get("cats", {}).get(cat))
-    if s["mode"] == "inherit":
-        s = norm_setting(r.get("default"))
+def _plan(hass: HomeAssistant, channels: dict, cats: dict, user: str, cat: str):
+    """(основні, резервні) пари (назва, джерело) або None, якщо вимкнено.
+
+    Налаштування: власні користувача (підкатегорія, категорія), типове адміна,
+    загальне. Тиша (`off`) персистентного сповіщення не створює.
+    """
+    s = resolve_setting(cats, cat, routes_of(hass).get(user, {}))
     if s["mode"] == "off":
         return None
 
@@ -166,8 +196,24 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
         return
     users, me = _editable(hass, connection)
 
-    cats = [{"id": c["id"], "name": c["name"]} for c in categories_of(hass)]
-    cats.sort(key=lambda c: c["name"].lower())
+    tree = category_tree(hass)
+    groups = group_ids(tree)
+    is_admin = connection.user.is_admin
+    # дерево: категорія, під нею її підкатегорії; службові бачить лише адмін
+    cats = [
+        {
+            "id": i,
+            "name": tree[i]["name"],
+            "parent": tree[i]["parent"],
+            "parent_name": tree[tree[i]["parent"]]["name"] if tree[i]["parent"] else None,
+            "group": i in groups,
+            "default": tree[i]["default"],
+            "service": tree[i]["service"],
+            "admin_off": admin_off(tree, i),
+        }
+        for i in ordered_ids(tree)
+        if is_admin or not tree[i]["service"]
+    ]
 
     channels: dict[str, list[dict]] = {u: [] for u in users}
     for sid, data in channels_of(hass).items():
@@ -210,15 +256,25 @@ def _ws_set(hass: HomeAssistant, connection, msg: dict) -> None:
         return
 
     allowed = _allowed_for(hass, user)
-    known_cats = {c["id"] for c in categories_of(hass)}
+    tree = category_tree(hass)
+    # службові категорії змінює лише адмін; у решти користувачів вони лишаються як є
+    editable = {
+        i for i, c in tree.items() if connection.user.is_admin or not c["service"]
+    }
+    stored_cats = routes_of(hass).get(user, {}).get("cats", {})
+
+    new_cats = {
+        i: norm_setting(stored_cats[i], allowed)
+        for i in tree
+        if i in stored_cats and i not in editable
+    }
+    for c, v in msg["cats"].items():
+        if c in editable:
+            new_cats[c] = norm_setting(v, allowed)
 
     new_route = {
         "default": norm_setting(msg["default"], allowed),
-        "cats": {
-            c: norm_setting(v, allowed)
-            for c, v in msg["cats"].items()
-            if c in known_cats
-        },
+        "cats": new_cats,
     }
     options = dict(entry.options)
     routes = dict(options.get("routes", {}))
@@ -241,9 +297,22 @@ async def _register_common(hass: HomeAssistant) -> None:
 
             async def _send(call: ServiceCall) -> None:
                 cat = slugify(call.data["category"])
-                if cat not in {c["id"] for c in categories_of(hass)}:
-                    _LOGGER.warning(
-                        "Невідома категорія '%s', діють загальні правила", cat
+                cats = category_tree(hass)
+                err = check_callable(cats, cat)
+                if err == ERR_UNKNOWN:
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key=ERR_UNKNOWN,
+                        translation_placeholders={"category": cat},
+                    )
+                if err == ERR_GROUP:
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key=ERR_GROUP,
+                        translation_placeholders={
+                            "category": cat,
+                            "children": ", ".join(children_of(cats, cat)),
+                        },
                     )
 
                 channels = channels_of(hass)
@@ -251,6 +320,7 @@ async def _register_common(hass: HomeAssistant) -> None:
                 for k in ("title", "data"):
                     if k in call.data:
                         payload[k] = call.data[k]
+                payload = apply_prefix(prefix_of(cats, cat), payload)
 
                 # результат спроби по джерелу: одне джерело не надсилаємо двічі за виклик
                 results: dict[str, bool] = {}
@@ -274,13 +344,15 @@ async def _register_common(hass: HomeAssistant) -> None:
                 if "all" in users or not users:
                     common = [c for c in channels.values() if c["owner"] == COMMON]
                     if not users and common:
+                        if admin_off(cats, cat):  # вимкнено адміном (наприклад, dev)
+                            return
                         for c in common:
                             await attempt(COMMON, c["name"], c["source"])
                         return
                     users = list(persons(hass))
 
                 for u in users:
-                    plan = _plan(hass, channels, u, cat)
+                    plan = _plan(hass, channels, cats, u, cat)
                     if plan is None:
                         continue
                     primary, fallback = plan
@@ -353,16 +425,48 @@ async def _register_common(hass: HomeAssistant) -> None:
 
 
 async def _refresh_titles(hass: HomeAssistant) -> None:
-    """Оновлює назви каналів у списку: «Власник · Назва»."""
-    entry = entry_of(hass, KIND_CHANNELS)
+    """Оновлює заголовки в списках: канали «Власник · Назва», підкатегорії «Батько › Назва»."""
+    for kind, sub_type in ((KIND_CHANNELS, "channel"), (KIND_CATEGORIES, "category")):
+        entry = entry_of(hass, kind)
+        if entry is None:
+            continue
+        for sub in list(entry.subentries.values()):
+            if sub.subentry_type != sub_type:
+                continue
+            title = sub_title(hass, sub_type, dict(sub.data))
+            if title != sub.title:
+                hass.config_entries.async_update_subentry(entry, sub, title=title)
+
+
+async def _heal_categories(hass: HomeAssistant) -> None:
+    """Підкатегорії, чия батьківська категорія зникла, стають звичайними категоріями.
+
+    Ядро HA не дає заборонити стандартне видалення підзапису, тому наслідки
+    прибираємо після видалення й повідомляємо про це в панелі HA.
+    """
+    entry = entry_of(hass, KIND_CATEGORIES)
     if entry is None:
         return
-    for sub in list(entry.subentries.values()):
-        if sub.subentry_type != "channel":
-            continue
-        title = sub_title(hass, "channel", dict(sub.data))
-        if title != sub.title:
-            hass.config_entries.async_update_subentry(entry, sub, title=title)
+    subs = [s for s in entry.subentries.values() if s.subentry_type == "category"]
+    ids = {s.data.get("id") for s in subs}
+    healed: list[str] = []
+    for s in subs:
+        parent = s.data.get("parent")
+        if parent and (parent not in ids or parent == s.data.get("id")):
+            data = {k: v for k, v in s.data.items() if k != "parent"}
+            hass.config_entries.async_update_subentry(
+                entry, s, data=data, title=sub_title(hass, "category", data)
+            )
+            healed.append(f"{data['name']} ({data['id']})")
+    if healed:
+        persistent_notification.async_create(
+            hass,
+            "Видалено категорію, у якої були підкатегорії. Вони стали звичайними "
+            "категоріями верхнього рівня: " + ", ".join(healed) + ". "
+            "Перевір скрипти й налаштування маршрутів.",
+            title="Smart Notify",
+            notification_id="smart_notify_orphaned_categories",
+        )
 
 
 async def _ensure_kinds(hass: HomeAssistant) -> None:
@@ -406,7 +510,9 @@ async def _ensure_kinds(hass: HomeAssistant) -> None:
 
 
 async def _on_entry_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Категорії змінились: оновлюємо список у формі сервісу."""
+    """Категорії змінились: зцілюємо підкатегорії, оновлюємо заголовки й форму сервісу."""
+    await _heal_categories(hass)
+    await _refresh_titles(hass)
     _apply_schema(hass)
 
 

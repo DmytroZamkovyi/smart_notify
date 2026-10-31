@@ -47,24 +47,47 @@
       },
       "step": {
         "user": {
-          "title": "New category",
+          "title": "New category or subcategory",
           "data": {
             "id": "ID (lowercase latin, digits, _; used in scripts)",
             "name": "Name",
-            "icon": "Icon"
+            "icon": "Icon",
+            "parent": "Parent category (for a subcategory)",
+            "prefix": "Title prefix",
+            "default": "Default for everyone",
+            "service": "Service (hide from users)"
+          },
+          "data_description": {
+            "id": "Used in scripts. You can only send to a category without subcategories or to a subcategory.",
+            "parent": "Leave empty for a regular category. A category with subcategories becomes a group: it cannot be sent to and only holds shared settings for its subcategories.",
+            "prefix": "Text without brackets. \"Power\" + \"Emergency\" gives [Power][Emergency] at the start of the title. With no title, the prefix itself becomes the title.",
+            "default": "\"As in general\": each user configures it. \"Off\": nobody gets it until a user explicitly turns it on.",
+            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it."
           }
         },
         "reconfigure": {
           "title": "Edit category",
           "data": {
             "name": "Name",
-            "icon": "Icon"
+            "icon": "Icon",
+            "parent": "Parent category (for a subcategory)",
+            "prefix": "Title prefix",
+            "default": "Default for everyone",
+            "service": "Service (hide from users)"
+          },
+          "data_description": {
+            "parent": "Leave empty for a regular category. A category with subcategories becomes a group: it cannot be sent to and only holds shared settings for its subcategories.",
+            "prefix": "Text without brackets. \"Power\" + \"Emergency\" gives [Power][Emergency] at the start of the title. With no title, the prefix itself becomes the title.",
+            "default": "\"As in general\": each user configures it. \"Off\": nobody gets it until a user explicitly turns it on.",
+            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it."
           }
         }
       },
       "error": {
         "bad_id": "Only lowercase latin letters, digits and _.",
-        "id_exists": "This category already exists."
+        "id_exists": "This category already exists.",
+        "bad_parent": "Only a top-level category can be a parent.",
+        "has_children": "This category has subcategories, so it cannot become a subcategory itself."
       },
       "abort": {
         "reconfigure_successful": "Category updated."
@@ -100,6 +123,22 @@
     "abort": {
       "no_users": "There are no persons in HA.",
       "routes_on_categories": "Routes are configured in the \"Smart Notify · Categories\" block."
+    }
+  },
+  "selector": {
+    "category_default": {
+      "options": {
+        "general": "As in the user's general setting",
+        "off": "Off for everyone"
+      }
+    }
+  },
+  "exceptions": {
+    "unknown_category": {
+      "message": "Unknown category \"{category}\". Add it in Settings → Devices & services → Smart Notify → Categories."
+    },
+    "category_is_group": {
+      "message": "Category \"{category}\" has subcategories and cannot be sent to. Use one of its subcategories: {children}."
     }
   }
 }
