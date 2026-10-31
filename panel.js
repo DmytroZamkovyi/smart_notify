@@ -151,7 +151,7 @@ class SmartNotifyPanel extends HTMLElement {
 
     this._renderTarget(GENERAL, "Загальний маршрут (усі категорії без свого)", true, null);
     this._quiet = JSON.parse(JSON.stringify(route.quiet || {}));
-    this._renderQuiet();
+    if (u !== "common") this._renderQuiet();
     d.categories.forEach((c) => {
       const title = c.parent ? c.name : c.group ? `${c.name} (група)` : c.name;
       this._renderTarget(c.id, title + (c.service ? " (службова)" : ""), false, c);
@@ -252,7 +252,7 @@ class SmartNotifyPanel extends HTMLElement {
         user: this._user,
         default: def,
         cats,
-        quiet: this._quietOut(),
+        ...(this._user === "common" ? {} : { quiet: this._quietOut() }),
       });
       this._d.routes[this._user] = res;
       this._setStatus("Збережено ✓");

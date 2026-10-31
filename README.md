@@ -101,7 +101,7 @@ blocks appear:
 - If every selected channel fails, the error is logged and the message goes to
   the HA panel as a last resort.
 - Without `user` (or `user: all`): every person separately, by their own routes.
-- `user: common`: only the "Common" channels (one shared message, e.g. a group chat). It can be combined with people: `user: [common, person.alice]`.
+- `user: common`: only the "Common" channels (one shared message, e.g. a group chat). Admins configure it on `/smart-notify` by choosing "Common channel" in the user list: the same route per category as for a person (without quiet hours). Until saved, all "Common" channels are used. It can be combined with people: `user: [common, person.alice]`.
 - The same channel is never used twice in one call.
 - `category` is required. An unknown category, or a category that has
   subcategories, makes the action fail with an error (visible in the
@@ -278,6 +278,8 @@ HTML5 push (`html5_notification.clicked`).
   real routes and quiet hours for a chosen category and priority.
 
 ## Upgrading to 6.0
+
+6.1 adds the per-category route for the common channel (see `user: common`); nothing to migrate.
 
 **BREAKING**: without `user`, `notify.smart` now sends to every person separately
 (before: to the "Common" channels, and only if there were none, to everybody).

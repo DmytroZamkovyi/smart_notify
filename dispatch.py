@@ -186,9 +186,14 @@ class Notifier:
     # ------------------------------------------------------------ допоміжне
 
     def _plan(self, channels: dict, cats: dict, user: str, cat: str):
-        s = resolve_setting(cats, cat, routes_of(self.hass).get(user, {}))
+        route = routes_of(self.hass).get(user)
+        s = resolve_setting(cats, cat, route or {})
         if s["mode"] == "off":
             return None
+        if user == COMMON and not route:
+            # маршрут спільного каналу ще не налаштований: усі спільні канали
+            srcs = [(c["name"], c["source"]) for c in channels.values() if c["owner"] == COMMON]
+            return (srcs or [(PERSISTENT_NAME, FALLBACK_SOURCE)]), []
         primary = [x for x in (_source_of(channels, c) for c in s["channels"]) if x]
         fallback = [x for x in (_source_of(channels, c) for c in s["fallback"]) if x]
         if not primary and not fallback:
@@ -281,25 +286,17 @@ class Notifier:
             "persist": persist,
         }
 
-    async def _deliver_common(self, run: _Run, channels: dict, m: Msg) -> dict:
-        rec: list[dict] = []
-        ok = False
-        for c in (c for c in channels.values() if c["owner"] == COMMON):
-            if await self._attempt(run, c["name"], c["source"], m, rec):
-                ok = True
-        return {
-            "user": COMMON,
-            "status": "sent" if ok else "failed",
-            "channels": rec,
-            "ok": ok,
-            "persist": [],
-        }
+    async def _deliver_common(self, run: _Run, channels: dict, cats: dict, m: Msg) -> dict:
+        """Спільний канал: маршрут «common» за категоріями (без тихих годин і аварійної панелі)."""
+        res = await self._deliver_user(run, channels, cats, COMMON, m, last_resort=False)
+        res["persist"] = []
+        return res
 
     async def _deliver_target(
         self, run: _Run, channels: dict, cats: dict, user: str, m: Msg, last_resort: bool = True
     ) -> dict:
         if user == COMMON:
-            return await self._deliver_common(run, channels, m)
+            return await self._deliver_common(run, channels, cats, m)
         return await self._deliver_user(run, channels, cats, user, m, last_resort)
 
     # ------------------------------------------- кнопки, повтор, повтор доставки
@@ -644,7 +641,7 @@ class Notifier:
             else:
                 m = self._make_msg(nid, cats, cat, title, message, std, extra, raw, COMMON)
                 self._prepare(m)
-                res = await self._deliver_common(run, channels, m)
+                res = await self._deliver_common(run, channels, cats, m)
                 self._after(m, res)
                 results.append(res)
 

@@ -30,6 +30,7 @@ from homeassistant.util import slugify
 
 from .config_flow import sub_title
 from .const import (
+    COMMON,
     DOMAIN,
     ENTRY_TITLES,
     KIND_CATEGORIES,
@@ -192,7 +193,8 @@ def _editable(hass: HomeAssistant, connection) -> tuple[dict[str, str], str | No
     people = persons(hass)
     me = _person_of(hass, connection.user.id)
     if connection.user.is_admin:
-        return people, me
+        # адмін налаштовує ще й спільний канал (окремий «користувач» common)
+        return {**people, COMMON: "Спільний канал"}, me
     if me and me in people:
         return {me: people[me]}, me
     return {}, me
