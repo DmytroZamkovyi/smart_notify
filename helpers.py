@@ -23,38 +23,6 @@ PLATFORM_NAMES = {
     "html5": "Браузер",
 }
 
-# Ключі data, які передаються в дії telegram_bot як є
-TELEGRAM_PASSTHROUGH = (
-    "parse_mode",
-    "disable_notification",
-    "disable_web_page_preview",
-    "keyboard",
-    "inline_keyboard",
-    "message_tag",
-    "reply_to_message_id",
-    "message_thread_id",
-)
-
-# Ключі data, які передаються в html5.send_message як є
-HTML5_PASSTHROUGH = (
-    "icon",
-    "badge",
-    "image",
-    "tag",
-    "actions",
-    "dir",
-    "renotify",
-    "silent",
-    "require_interaction",
-    "vibrate",
-    "lang",
-    "timestamp",
-    "ttl",
-    "urgency",
-    "data",
-)
-
-
 def entry_of(hass: HomeAssistant, kind: str) -> ConfigEntry | None:
     """Запис інтеграції певного виду (канали або категорії)."""
     for e in hass.config_entries.async_entries(DOMAIN):
@@ -149,95 +117,18 @@ def available_sources(hass: HomeAssistant) -> dict[str, str]:
     return out
 
 
-async def _deliver_telegram(
-    hass: HomeAssistant, entity_id: str, payload: dict
-) -> None:
-    """Telegram-сутність: data перетворюється на дії telegram_bot.*.
-
-    Підтримується: photo (або image) - URL чи локальний шлях, caption,
-    parse_mode, keyboard, inline_keyboard, disable_notification,
-    disable_web_page_preview, message_tag, reply_to_message_id, message_thread_id.
-    """
-    extra = payload.get("data") or {}
-    message = payload["message"]
-    title = payload.get("title")
-
-    common = {k: extra[k] for k in TELEGRAM_PASSTHROUGH if k in extra}
-    photo = extra.get("photo") or extra.get("image")
-
-    if photo:
-        caption = extra.get("caption")
-        if caption is None:
-            caption = f"{title}\n{message}" if title else message
-        data = {"entity_id": [entity_id], "caption": caption, **common}
-        data.pop("disable_web_page_preview", None)  # для фото не діє
-        if str(photo).startswith(("http://", "https://")):
-            data["url"] = photo
-        else:
-            data["file"] = photo
-        await hass.services.async_call(
-            "telegram_bot", "send_photo", data, blocking=True
-        )
-        return
-
-    data = {"entity_id": [entity_id], "message": message, **common}
-    if title:
-        data["title"] = title
-    await hass.services.async_call(
-        "telegram_bot", "send_message", data, blocking=True
-    )
+DEFAULT_SETTINGS = {"expire_hours": 24}
 
 
-async def _deliver_html5(hass: HomeAssistant, entity_id: str, payload: dict) -> None:
-    """Браузер (сутність HTML5): data -> html5.send_message.
-
-    Підтримується: icon, badge, image, tag, actions, dir, renotify, silent,
-    require_interaction (або requireInteraction), vibrate, lang, timestamp,
-    ttl, urgency, data.
-    """
-    extra = dict(payload.get("data") or {})
-    if "requireInteraction" in extra and "require_interaction" not in extra:
-        extra["require_interaction"] = extra["requireInteraction"]
-
-    data = {k: extra[k] for k in HTML5_PASSTHROUGH if k in extra}
-    data["title"] = payload.get("title") or "Home Assistant"  # title обов'язковий
-    data["message"] = payload["message"]
-    await hass.services.async_call(
-        "html5",
-        "send_message",
-        data,
-        target={"entity_id": entity_id},
-        blocking=True,
-    )
-
-
-async def deliver(hass: HomeAssistant, source: str, payload: dict) -> None:
-    """Надсилає через сервіс notify.* або notify-сутність.
-
-    Джерело service:html5@Ім'я (застарілий варіант) теж розуміється.
-    """
-    kind, _, target = source.partition(":")
-    if kind == "entity":
-        platform = _entity_platform(hass, target)
-        if platform == "telegram_bot" and hass.services.has_service(
-            "telegram_bot", "send_message"
-        ):
-            await _deliver_telegram(hass, target, payload)
-            return
-        if platform == "html5" and hass.services.has_service("html5", "send_message"):
-            await _deliver_html5(hass, target, payload)
-            return
-
-        data = {"entity_id": target, "message": payload["message"]}
-        if "title" in payload:
-            data["title"] = payload["title"]
-        if "data" in payload:
-            _LOGGER.debug("data відкинуто для сутності %s", target)
-        await hass.services.async_call("notify", "send_message", data, blocking=True)
-        return
-
-    service, _, device = target.partition("@")
-    out = dict(payload)
-    if device:
-        out["target"] = [device]
-    await hass.services.async_call("notify", service, out, blocking=True)
+def settings_of(hass: HomeAssistant) -> dict:
+    """Налаштування інтеграції (зберігаються в options запису категорій)."""
+    e = entry_of(hass, KIND_CATEGORIES)
+    raw = e.options.get("settings", {}) if e else {}
+    out = dict(DEFAULT_SETTINGS)
+    try:
+        hours = float(raw.get("expire_hours", out["expire_hours"]))
+        if hours > 0:
+            out["expire_hours"] = hours
+    except (TypeError, ValueError):
+        pass
+    return out

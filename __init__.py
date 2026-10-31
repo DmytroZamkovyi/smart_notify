@@ -15,9 +15,14 @@ from homeassistant.components import (
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.start import async_at_started
@@ -25,43 +30,37 @@ from homeassistant.util import slugify
 
 from .config_flow import sub_title
 from .const import (
-    COMMON,
     DOMAIN,
     ENTRY_TITLES,
-    FALLBACK_SOURCE,
     KIND_CATEGORIES,
     KIND_CHANNELS,
     KINDS,
 )
+from .dispatch import Notifier, notifier_of
 from .helpers import (
     PERSISTENT,
     category_tree,
     channels_of,
-    deliver,
     entry_of,
     persons,
     routes_of,
+    settings_of,
 )
+from . import quiet as quiet_mod
 from .routing import (
-    ERR_GROUP,
-    ERR_UNKNOWN,
     admin_off,
-    apply_prefix,
-    check_callable,
-    children_of,
+    dedup_minutes,
     group_ids,
+    icon_of,
     label,
     norm_setting,
     ordered_ids,
-    prefix_of,
-    resolve_setting,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 PANEL_URL = "smart-notify"
 STATIC_URL = "/smart_notify_static/panel.js"
-PERSISTENT_NAME = "Панель HA"
 
 SEND_SCHEMA = vol.Schema(
     {
@@ -70,6 +69,8 @@ SEND_SCHEMA = vol.Schema(
         vol.Required("message"): cv.string,
         vol.Optional("title"): cv.string,
         vol.Optional("data"): dict,
+        vol.Optional("presence", default="any"): vol.In(["any", "home", "away"]),
+        vol.Optional("exclude"): vol.All(cv.ensure_list, [cv.string]),
     }
 )
 
@@ -121,9 +122,34 @@ def _service_schema(hass: HomeAssistant) -> dict:
                 "required": False,
                 "selector": {"text": {}},
             },
+            "presence": {
+                "name": "Присутність",
+                "description": "Лише тим, хто вдома або не вдома (за person).",
+                "required": False,
+                "default": "any",
+                "selector": {
+                    "select": {
+                        "options": [
+                            {"value": "any", "label": "Усім"},
+                            {"value": "home", "label": "Лише вдома"},
+                            {"value": "away", "label": "Лише не вдома"},
+                        ],
+                        "mode": "dropdown",
+                    }
+                },
+            },
+            "exclude": {
+                "name": "Виключити",
+                "description": "Кому не надсилати.",
+                "required": False,
+                "selector": {"entity": {"domain": "person", "multiple": True}},
+            },
             "data": {
                 "name": "Дані",
-                "description": "Додаткові дані для каналу (картинки, кнопки).",
+                "description": (
+                    "image, url, actions, tag, priority, format, sticky, clear, "
+                    "expire, progress (+ ключі каналів)."
+                ),
                 "required": False,
                 "selector": {"object": {}},
             },
@@ -134,34 +160,6 @@ def _service_schema(hass: HomeAssistant) -> dict:
 @callback
 def _apply_schema(hass: HomeAssistant) -> None:
     async_set_service_schema(hass, "notify", "smart", _service_schema(hass))
-
-
-def _source_of(channels: dict, cid: str) -> tuple[str, str] | None:
-    """(назва, джерело) для id каналу; None, якщо канал зник."""
-    if cid == PERSISTENT:
-        return (PERSISTENT_NAME, FALLBACK_SOURCE)
-    ch = channels.get(cid)
-    if ch is None:
-        _LOGGER.warning("Канал %s більше не існує, пропускаю", cid)
-        return None
-    return (ch["name"], ch["source"])
-
-
-def _plan(hass: HomeAssistant, channels: dict, cats: dict, user: str, cat: str):
-    """(основні, резервні) пари (назва, джерело) або None, якщо вимкнено.
-
-    Налаштування: власні користувача (підкатегорія, категорія), типове адміна,
-    загальне. Тиша (`off`) персистентного сповіщення не створює.
-    """
-    s = resolve_setting(cats, cat, routes_of(hass).get(user, {}))
-    if s["mode"] == "off":
-        return None
-
-    primary = [x for x in (_source_of(channels, c) for c in s["channels"]) if x]
-    fallback = [x for x in (_source_of(channels, c) for c in s["fallback"]) if x]
-    if not primary and not fallback:
-        primary = [(PERSISTENT_NAME, FALLBACK_SOURCE)]
-    return primary, fallback
 
 
 def _person_of(hass: HomeAssistant, ha_user_id: str) -> str | None:
@@ -210,6 +208,8 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
             "default": tree[i]["default"],
             "service": tree[i]["service"],
             "admin_off": admin_off(tree, i),
+            "icon": icon_of(tree, i),
+            "dedup": dedup_minutes(tree, i),
         }
         for i in ordered_ids(tree)
         if is_admin or not tree[i]["service"]
@@ -231,6 +231,7 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
                 c["id"]: norm_setting(r.get("cats", {}).get(c["id"]), allowed)
                 for c in cats
             },
+            "quiet": quiet_mod.norm_quiet(r.get("quiet")),
         }
 
     connection.send_result(
@@ -242,6 +243,8 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
             "categories": cats,
             "channels": channels,
             "routes": routes,
+            "settings": settings_of(hass),
+            "queue": {u: notifier_of(hass).queue_count(u) for u in users},
         },
     )
 
@@ -272,9 +275,11 @@ def _ws_set(hass: HomeAssistant, connection, msg: dict) -> None:
         if c in editable:
             new_cats[c] = norm_setting(v, allowed)
 
+    stored_quiet = routes_of(hass).get(user, {}).get("quiet")
     new_route = {
         "default": norm_setting(msg["default"], allowed),
         "cats": new_cats,
+        "quiet": quiet_mod.norm_quiet(msg["quiet"] if "quiet" in msg else stored_quiet),
     }
     options = dict(entry.options)
     routes = dict(options.get("routes", {}))
@@ -282,6 +287,39 @@ def _ws_set(hass: HomeAssistant, connection, msg: dict) -> None:
     options["routes"] = routes
     hass.config_entries.async_update_entry(entry, options=options)
     connection.send_result(msg["id"], new_route)
+
+
+@callback
+def _ws_journal(hass: HomeAssistant, connection, msg: dict) -> None:
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Лише для адміна")
+        return
+    connection.send_result(msg["id"], {"items": notifier_of(hass).journal()})
+
+
+@websocket_api.async_response
+async def _ws_test(hass: HomeAssistant, connection, msg: dict) -> None:
+    users, _ = _editable(hass, connection)
+    user = msg["user"]
+    if user not in users:
+        connection.send_error(msg["id"], "unauthorized", "Немає доступу")
+        return
+    cat = msg["category"]
+    try:
+        result = await notifier_of(hass).send(
+            {
+                "category": cat,
+                "user": [user],
+                "title": "Тест Smart Notify",
+                "message": "Перевірка доставки за вашим маршрутом.",
+                "data": {"priority": msg.get("priority", "normal")},
+            },
+            test=True,
+        )
+    except Exception as err:  # noqa: BLE001
+        connection.send_error(msg["id"], "failed", str(err))
+        return
+    connection.send_result(msg["id"], result)
 
 
 async def _register_common(hass: HomeAssistant) -> None:
@@ -293,88 +331,23 @@ async def _register_common(hass: HomeAssistant) -> None:
     lock = data.setdefault("reg_lock", asyncio.Lock())
 
     async with lock:
+        if "notifier" not in data:
+            notifier = Notifier(hass)
+            await notifier.async_start()
+            data["notifier"] = notifier
+
         if not data.get("svc"):
 
-            async def _send(call: ServiceCall) -> None:
-                cat = slugify(call.data["category"])
-                cats = category_tree(hass)
-                err = check_callable(cats, cat)
-                if err == ERR_UNKNOWN:
-                    raise ServiceValidationError(
-                        translation_domain=DOMAIN,
-                        translation_key=ERR_UNKNOWN,
-                        translation_placeholders={"category": cat},
-                    )
-                if err == ERR_GROUP:
-                    raise ServiceValidationError(
-                        translation_domain=DOMAIN,
-                        translation_key=ERR_GROUP,
-                        translation_placeholders={
-                            "category": cat,
-                            "children": ", ".join(children_of(cats, cat)),
-                        },
-                    )
+            async def _send(call: ServiceCall) -> ServiceResponse:
+                return await notifier_of(hass).send(dict(call.data))
 
-                channels = channels_of(hass)
-                payload = {"message": call.data["message"]}
-                for k in ("title", "data"):
-                    if k in call.data:
-                        payload[k] = call.data[k]
-                payload = apply_prefix(prefix_of(cats, cat), payload)
-
-                # результат спроби по джерелу: одне джерело не надсилаємо двічі за виклик
-                results: dict[str, bool] = {}
-
-                async def attempt(who: str, name: str, source: str) -> bool:
-                    if source in results:
-                        return results[source]
-                    try:
-                        await deliver(hass, source, payload)
-                        results[source] = True
-                    except Exception:  # noqa: BLE001
-                        _LOGGER.exception("Не доставлено: user=%s канал=%s", who, name)
-                        results[source] = False
-                    return results[source]
-
-                # приймає і "alice", і "person.alice" (селектор у формі дає entity_id)
-                users = [
-                    slugify(u.removeprefix("person.")) for u in call.data.get("user", [])
-                ]
-
-                if "all" in users or not users:
-                    common = [c for c in channels.values() if c["owner"] == COMMON]
-                    if not users and common:
-                        if admin_off(cats, cat):  # вимкнено адміном (наприклад, dev)
-                            return
-                        for c in common:
-                            await attempt(COMMON, c["name"], c["source"])
-                        return
-                    users = list(persons(hass))
-
-                for u in users:
-                    plan = _plan(hass, channels, cats, u, cat)
-                    if plan is None:
-                        continue
-                    primary, fallback = plan
-
-                    ok = False
-                    for name, source in primary:
-                        if await attempt(u, name, source):
-                            ok = True
-
-                    if not ok:
-                        for name, source in fallback:
-                            if await attempt(u, name, source):
-                                ok = True
-                                break
-
-                    if not ok and FALLBACK_SOURCE not in results:
-                        _LOGGER.error(
-                            "Жоден канал не спрацював для %s, надсилаю в панель HA", u
-                        )
-                        await attempt(u, PERSISTENT_NAME, FALLBACK_SOURCE)
-
-            hass.services.async_register("notify", "smart", _send, schema=SEND_SCHEMA)
+            hass.services.async_register(
+                "notify",
+                "smart",
+                _send,
+                schema=SEND_SCHEMA,
+                supports_response=SupportsResponse.OPTIONAL,
+            )
             data["svc"] = True
 
         if not data.get("static"):
@@ -406,6 +379,30 @@ async def _register_common(hass: HomeAssistant) -> None:
                         vol.Required("user"): str,
                         vol.Required("default"): dict,
                         vol.Required("cats"): {str: dict},
+                        vol.Optional("quiet"): dict,
+                    }
+                ),
+            )
+            websocket_api.async_register_command(
+                hass,
+                "smart_notify/journal",
+                _ws_journal,
+                websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+                    {vol.Required("type"): "smart_notify/journal"}
+                ),
+            )
+            websocket_api.async_register_command(
+                hass,
+                "smart_notify/test",
+                _ws_test,
+                websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+                    {
+                        vol.Required("type"): "smart_notify/test",
+                        vol.Required("user"): str,
+                        vol.Required("category"): str,
+                        vol.Optional("priority", default="normal"): vol.In(
+                            ["low", "normal", "high", "critical"]
+                        ),
                     }
                 ),
             )
@@ -553,5 +550,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     hass.services.async_remove("notify", "smart")
     frontend.async_remove_panel(hass, PANEL_URL)
     data = hass.data.get(DOMAIN, {})
+    if "notifier" in data:
+        data.pop("notifier").async_stop()
     data["svc"] = False
     data["panel"] = False

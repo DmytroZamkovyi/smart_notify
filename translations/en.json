@@ -55,14 +55,16 @@
             "parent": "Parent category (for a subcategory)",
             "prefix": "Title prefix",
             "default": "Default for everyone",
-            "service": "Service (hide from users)"
+            "service": "Service (hide from users)",
+            "dedup": "Do not repeat an identical notification within (min)"
           },
           "data_description": {
             "id": "Used in scripts. You can only send to a category without subcategories or to a subcategory.",
             "parent": "Leave empty for a regular category. A category with subcategories becomes a group: it cannot be sent to and only holds shared settings for its subcategories.",
             "prefix": "Text without brackets. \"Power\" + \"Emergency\" gives [Power][Emergency] at the start of the title. With no title, the prefix itself becomes the title.",
             "default": "\"As in general\": each user configures it. \"Off\": nobody gets it until a user explicitly turns it on.",
-            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it."
+            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it.",
+            "dedup": "0 = off. Same title and text to the same person in this category is not sent again within this time."
           }
         },
         "reconfigure": {
@@ -73,13 +75,15 @@
             "parent": "Parent category (for a subcategory)",
             "prefix": "Title prefix",
             "default": "Default for everyone",
-            "service": "Service (hide from users)"
+            "service": "Service (hide from users)",
+            "dedup": "Do not repeat an identical notification within (min)"
           },
           "data_description": {
             "parent": "Leave empty for a regular category. A category with subcategories becomes a group: it cannot be sent to and only holds shared settings for its subcategories.",
             "prefix": "Text without brackets. \"Power\" + \"Emergency\" gives [Power][Emergency] at the start of the title. With no title, the prefix itself becomes the title.",
             "default": "\"As in general\": each user configures it. \"Off\": nobody gets it until a user explicitly turns it on.",
-            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it."
+            "service": "A service category (for example, for the developer) is hidden from users on the settings page; only admins see it.",
+            "dedup": "0 = off. Same title and text to the same person in this category is not sent again within this time."
           }
         }
       },
@@ -97,10 +101,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "Routes",
-        "description": "Choose the user to configure.",
-        "data": {
-          "user": "User"
+        "title": "Smart Notify settings",
+        "menu_options": {
+          "routes": "People's routes",
+          "settings": "General settings"
         }
       },
       "pick": {
@@ -117,6 +121,20 @@
           "mode": "Mode",
           "channels": "Send to (all selected at once)",
           "fallback": "If not delivered: try in order"
+        }
+      },
+      "routes": {
+        "title": "Routes",
+        "description": "Choose the user to configure. Quiet hours are set on the /smart-notify page.",
+        "data": {
+          "user": "User"
+        }
+      },
+      "settings": {
+        "title": "General settings",
+        "description": "How many hours a deferred notification stays relevant. Can be overridden per call with expire.",
+        "data": {
+          "expire_hours": "Deferred notification lifetime (h)"
         }
       }
     },

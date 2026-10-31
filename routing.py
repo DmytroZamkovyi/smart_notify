@@ -55,6 +55,15 @@ def norm_setting(v, allowed: set[str] | None = None) -> dict:
     return {"mode": mode, "channels": channels, "fallback": fallback}
 
 
+def _minutes(v) -> int:
+    """Невід'ємне ціле число хвилин; некоректне дає 0."""
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return 0
+    return max(n, 0)
+
+
 def norm_category(data: dict) -> dict:
     """Доповнює дані категорії типовими значеннями (старі записи без нових полів)."""
     parent = data.get("parent")
@@ -65,6 +74,8 @@ def norm_category(data: dict) -> dict:
         "prefix": str(data.get("prefix") or "").strip(),
         "default": default if default in DEFAULTS else DEFAULT_GENERAL,
         "service": bool(data.get("service", False)),
+        "icon": str(data.get("icon") or "").strip(),
+        "dedup": _minutes(data.get("dedup")),
     }
 
 
@@ -177,3 +188,19 @@ def apply_prefix(prefix: str, payload: dict) -> dict:
     title = out.get("title")
     out["title"] = f"{prefix} {title}" if title else prefix
     return out
+
+
+def dedup_minutes(cats: dict[str, dict], cid: str) -> int:
+    """Вікно усунення дублікатів у хвилинах: підкатегорія, потім категорія; 0 це вимкнено."""
+    for i in chain(cats, cid):
+        if cats[i]["dedup"] > 0:
+            return cats[i]["dedup"]
+    return 0
+
+
+def icon_of(cats: dict[str, dict], cid: str) -> str:
+    """Значок: власний, інакше батька, інакше порожньо."""
+    for i in chain(cats, cid):
+        if cats[i]["icon"]:
+            return cats[i]["icon"]
+    return ""

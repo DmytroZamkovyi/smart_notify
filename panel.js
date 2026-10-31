@@ -54,6 +54,13 @@ class SmartNotifyPanel extends HTMLElement {
         ha-card h3 { margin:0 0 12px; font-weight:500; }
         #list { display:grid; gap:16px; }
         ha-card.sub { margin-left:16px; border-left:3px solid var(--primary-color); }
+        h3 ha-icon { --mdc-icon-size:20px; margin-right:6px; vertical-align:middle; }
+        .row { display:grid; gap:4px; padding:8px 0; border-top:1px solid var(--divider-color); }
+        button.btn { cursor:pointer; padding:8px 14px; border-radius:8px; border:1px solid var(--primary-color);
+          background:transparent; color:var(--primary-color); font-size:14px; margin:6px 6px 0 0; }
+        button.btn.fill { background:var(--primary-color); color:var(--text-primary-color,#fff); }
+        .log { font-size:.85em; padding:6px 0; border-top:1px solid var(--divider-color); }
+        .log small { color:var(--secondary-text-color); }
       </style>
       <div class="bar">
         <ha-menu-button></ha-menu-button>
@@ -143,10 +150,15 @@ class SmartNotifyPanel extends HTMLElement {
     });
 
     this._renderTarget(GENERAL, "Загальний маршрут (усі категорії без свого)", true, null);
+    this._quiet = JSON.parse(JSON.stringify(route.quiet || {}));
+    this._renderQuiet();
     d.categories.forEach((c) => {
       const title = c.parent ? c.name : c.group ? `${c.name} (група)` : c.name;
       this._renderTarget(c.id, title + (c.service ? " (службова)" : ""), false, c);
     });
+
+    this._renderTest();
+    if (d.is_admin) this._renderJournal();
 
     if (!(d.channels[u] || []).length) {
       const hint = document.createElement("div");
@@ -182,7 +194,14 @@ class SmartNotifyPanel extends HTMLElement {
     const card = document.createElement("ha-card");
     if (cat && cat.parent) card.classList.add("sub");
     const h = document.createElement("h3");
-    h.textContent = cat && cat.parent ? `${cat.parent_name} › ${title}` : title;
+    if (cat && cat.icon) {
+      const ic = document.createElement("ha-icon");
+      ic.setAttribute("icon", cat.icon);
+      h.appendChild(ic);
+    }
+    h.appendChild(
+      document.createTextNode(cat && cat.parent ? `${cat.parent_name} › ${title}` : title)
+    );
     card.appendChild(h);
     if (cat && cat.group) {
       const note = document.createElement("div");
@@ -233,12 +252,353 @@ class SmartNotifyPanel extends HTMLElement {
         user: this._user,
         default: def,
         cats,
+        quiet: this._quietOut(),
       });
       this._d.routes[this._user] = res;
       this._setStatus("Збережено ✓");
     } catch (e) {
       this._setStatus("Не збережено: " + (e.message || e), true);
     }
+  }
+
+
+  // ---------------------------------------------------------------- тихі години
+
+  _quietOut() {
+    const q = this._quiet || {};
+    return {
+      off: !!q.off,
+      mode: q.mode || "schedule",
+      intervals: (q.intervals || []).map((i) => ({
+        days: (i.days || []).map((x) => parseInt(x, 10)),
+        from: i.from,
+        to: i.to,
+      })),
+      entity: q.entity && q.entity.entity_id ? q.entity : null,
+      behavior: q.behavior || {},
+    };
+  }
+
+  _quietChanged() {
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this._save(), 400);
+  }
+
+  _renderQuiet() {
+    const card = document.createElement("ha-card");
+    const q = this._quiet;
+    q.mode = q.mode || "schedule";
+    q.intervals = q.intervals || [];
+    q.behavior = { low: "skip", normal: "defer", high: "silent", ...(q.behavior || {}) };
+    q.entity = q.entity || { entity_id: "", op: "is", value: "" };
+    const queued = (this._d.queue || {})[this._user] || 0;
+    const behOpts = [
+      { value: "skip", label: "Пропустити" },
+      { value: "silent", label: "Без звуку" },
+      { value: "defer", label: "Відкласти до кінця тихих годин" },
+    ];
+    const DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"].map((l, i) => ({
+      value: String(i),
+      label: l,
+    }));
+    const L = {
+      off: "Вимкнути тихі години (не видаляючи налаштування)",
+      mode: "Коли діють тихі години",
+      entity_id: "Сутність (наприклад, режим сну на телефоні)",
+      op: "Умова",
+      value: "Значення",
+      low: "Низький пріоритет",
+      normal: "Звичайний пріоритет",
+      high: "Високий пріоритет",
+      days: "Дні тижня (порожньо: щодня)",
+      from: "З",
+      to: "До",
+    };
+
+    const mkForm = (schema, data, onChange) => {
+      const f = document.createElement("ha-form");
+      f.hass = this._hass;
+      f.schema = schema;
+      f.data = data;
+      f.computeLabel = (s) => L[s.name] || s.name;
+      f.addEventListener("value-changed", (ev) => {
+        onChange(ev.detail.value);
+        this._quietChanged();
+      });
+      this._forms.push(f);
+      return f;
+    };
+
+    const h = document.createElement("h3");
+    h.textContent = "Тихі години";
+    card.appendChild(h);
+    const note = document.createElement("div");
+    note.className = "msg";
+    note.textContent =
+      "Критичні сповіщення проходять завжди. Для решти: пропустити, без звуку або відкласти й віддати після закінчення (до 3 окремо на категорію, більше одним зведенням)." +
+      (queued ? ` Зараз відкладено: ${queued}.` : "");
+    card.appendChild(note);
+
+    const draw = () => {
+      card.querySelectorAll(".qbody").forEach((n) => n.remove());
+      const body = document.createElement("div");
+      body.className = "qbody";
+      const top = [
+        { name: "off", selector: { boolean: {} } },
+        {
+          name: "mode",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "schedule", label: "За розкладом" },
+                { value: "entity", label: "Коли виконується умова для сутності" },
+                { value: "either", label: "За розкладом або за умовою" },
+              ],
+            },
+          },
+        },
+      ];
+      body.appendChild(
+        mkForm(top, { off: !!q.off, mode: q.mode }, (v) => {
+          const prev = q.mode;
+          q.off = !!v.off;
+          q.mode = v.mode;
+          if (prev !== q.mode) draw();
+        })
+      );
+
+      if (q.mode !== "entity") {
+        q.intervals.forEach((it, idx) => {
+          const row = document.createElement("div");
+          row.className = "row";
+          const sch = [
+            { name: "days", selector: { select: { mode: "list", multiple: true, options: DAYS } } },
+            {
+              type: "grid",
+              name: "",
+              schema: [
+                { name: "from", selector: { time: {} } },
+                { name: "to", selector: { time: {} } },
+              ],
+            },
+          ];
+          row.appendChild(
+            mkForm(
+              sch,
+              { days: (it.days || []).map(String), from: it.from || "22:00", to: it.to || "07:00" },
+              (v) => {
+                it.days = v.days || [];
+                it.from = v.from;
+                it.to = v.to;
+              }
+            )
+          );
+          const rm = document.createElement("button");
+          rm.className = "btn";
+          rm.textContent = "Видалити інтервал";
+          rm.onclick = () => {
+            q.intervals.splice(idx, 1);
+            draw();
+            this._quietChanged();
+          };
+          row.appendChild(rm);
+          body.appendChild(row);
+        });
+        const add = document.createElement("button");
+        add.className = "btn";
+        add.textContent = "+ Додати інтервал";
+        add.onclick = () => {
+          q.intervals.push({ days: [], from: "22:00", to: "07:00" });
+          draw();
+          this._quietChanged();
+        };
+        body.appendChild(add);
+      }
+
+      if (q.mode !== "schedule") {
+        const sch = [
+          { name: "entity_id", selector: { entity: {} } },
+          {
+            name: "op",
+            selector: {
+              select: {
+                mode: "dropdown",
+                options: [
+                  { value: "is", label: "стан дорівнює" },
+                  { value: "not", label: "стан не дорівнює" },
+                  { value: "gt", label: "число більше за" },
+                  { value: "lt", label: "число менше за" },
+                ],
+              },
+            },
+          },
+          { name: "value", selector: { text: {} } },
+        ];
+        const row = document.createElement("div");
+        row.className = "row";
+        row.appendChild(
+          mkForm(sch, { entity_id: q.entity.entity_id, op: q.entity.op, value: q.entity.value }, (v) => {
+            q.entity = { entity_id: v.entity_id || "", op: v.op || "is", value: v.value || "" };
+          })
+        );
+        body.appendChild(row);
+      }
+
+      const beh = [
+        { name: "low", selector: { select: { mode: "dropdown", options: behOpts } } },
+        { name: "normal", selector: { select: { mode: "dropdown", options: behOpts } } },
+        { name: "high", selector: { select: { mode: "dropdown", options: behOpts } } },
+      ];
+      const row = document.createElement("div");
+      row.className = "row";
+      row.appendChild(
+        mkForm(beh, q.behavior, (v) => {
+          q.behavior = { ...q.behavior, ...v };
+        })
+      );
+      body.appendChild(row);
+      card.appendChild(body);
+    };
+    draw();
+    this._list.appendChild(card);
+  }
+
+  // ------------------------------------------------------------------- тест
+
+  _renderTest() {
+    const card = document.createElement("ha-card");
+    const h = document.createElement("h3");
+    h.textContent = "Надіслати тест";
+    card.appendChild(h);
+    const note = document.createElement("div");
+    note.className = "msg";
+    note.textContent =
+      "Тест іде за твоїми справжніми маршрутами й тихими годинами, тож видно, що прийде насправді.";
+    card.appendChild(note);
+
+    const leaf = this._d.categories.filter((c) => !c.group);
+    const state = { category: leaf.length ? leaf[0].id : "", priority: "normal" };
+    const f = document.createElement("ha-form");
+    f.hass = this._hass;
+    f.schema = [
+      {
+        name: "category",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: leaf.map((c) => ({
+              value: c.id,
+              label: c.parent ? `${c.parent_name} › ${c.name}` : c.name,
+            })),
+          },
+        },
+      },
+      {
+        name: "priority",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: "low", label: "Низький" },
+              { value: "normal", label: "Звичайний" },
+              { value: "high", label: "Високий" },
+              { value: "critical", label: "Критичний" },
+            ],
+          },
+        },
+      },
+    ];
+    f.data = state;
+    f.computeLabel = (s) => ({ category: "Категорія", priority: "Пріоритет" })[s.name] || s.name;
+    f.addEventListener("value-changed", (ev) => Object.assign(state, ev.detail.value));
+    this._forms.push(f);
+    card.appendChild(f);
+
+    const out = document.createElement("div");
+    out.className = "msg";
+    const btn = document.createElement("button");
+    btn.className = "btn fill";
+    btn.textContent = "Надіслати тест";
+    btn.onclick = async () => {
+      out.textContent = "Надсилаю…";
+      try {
+        const r = await this._hass.callWS({
+          type: "smart_notify/test",
+          user: this._user,
+          category: state.category,
+          priority: state.priority,
+        });
+        out.textContent = this._describe(r.results);
+      } catch (e) {
+        out.textContent = "Помилка: " + (e.message || e);
+      }
+    };
+    card.appendChild(btn);
+    card.appendChild(out);
+    this._list.appendChild(card);
+  }
+
+  _describe(results) {
+    const ST = {
+      sent: "надіслано",
+      failed: "не доставлено",
+      off: "вимкнено для цієї категорії",
+      filtered: "відфільтровано",
+      duplicate: "дублікат",
+      quiet_skipped: "пропущено через тихі години",
+      deferred: "відкладено до кінця тихих годин",
+      expired: "втратило актуальність",
+    };
+    return (results || [])
+      .map((r) => {
+        const ch = (r.channels || [])
+          .map((c) => `${c.channel}: ${ST[c.status] || c.status}${c.error ? " (" + c.error + ")" : ""}`)
+          .join("; ");
+        return `${ST[r.status] || r.status}${ch ? " — " + ch : ""}`;
+      })
+      .join("\n");
+  }
+
+  // ----------------------------------------------------------------- журнал
+
+  _renderJournal() {
+    const card = document.createElement("ha-card");
+    const h = document.createElement("h3");
+    h.textContent = "Журнал (останні сповіщення)";
+    card.appendChild(h);
+    const box = document.createElement("div");
+    const btn = document.createElement("button");
+    btn.className = "btn";
+    btn.textContent = "Оновити";
+    const load = async () => {
+      box.textContent = "Завантажую…";
+      try {
+        const r = await this._hass.callWS({ type: "smart_notify/journal" });
+        box.innerHTML = "";
+        if (!r.items.length) box.textContent = "Поки порожньо.";
+        r.items.slice(0, 50).forEach((it) => {
+          const d = document.createElement("div");
+          d.className = "log";
+          const when = new Date(it.ts * 1000).toLocaleString();
+          const head = document.createElement("div");
+          head.textContent = `${it.test ? "[тест] " : ""}${it.category}: ${it.title || it.message}`;
+          const sm = document.createElement("small");
+          sm.style.whiteSpace = "pre-wrap";
+          sm.textContent = `${when}, ${it.priority}\n${this._describe(it.results)}`;
+          d.appendChild(head);
+          d.appendChild(sm);
+          box.appendChild(d);
+        });
+      } catch (e) {
+        box.textContent = "Помилка: " + (e.message || e);
+      }
+    };
+    btn.onclick = load;
+    card.appendChild(btn);
+    card.appendChild(box);
+    this._list.appendChild(card);
+    load();
   }
 
   _setStatus(text, err = false) {

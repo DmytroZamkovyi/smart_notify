@@ -16,6 +16,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
     IconSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -38,6 +41,7 @@ from .helpers import (
     channels_of,
     entry_of,
     persons,
+    settings_of,
 )
 from .routing import (
     DEFAULT_GENERAL,
@@ -56,6 +60,7 @@ DONE_KEY = "__done"
 
 # необов'язкові ключі підзапису категорії: очищене поле у формі означає «видалити»
 CATEGORY_OPTIONAL = ("icon", "parent", "prefix")
+DEDUP_MAX = 1440
 
 MODE_LABELS = {
     "inherit": "Як у загальному маршруті",
@@ -220,6 +225,11 @@ def _category_data(base: dict, user_input: dict) -> dict:
     data["name"] = user_input["name"].strip()
     data["default"] = user_input.get("default", DEFAULT_GENERAL)
     data["service"] = bool(user_input.get("service", False))
+    dedup = int(user_input.get("dedup") or 0)
+    if dedup > 0:
+        data["dedup"] = min(dedup, DEDUP_MAX)
+    else:
+        data.pop("dedup", None)
     return data
 
 
@@ -252,6 +262,12 @@ class CategoryFlow(ConfigSubentryFlow):
             fields[vol.Optional("parent")] = _select(parents)
         fields[vol.Optional("prefix")] = TextSelector()
         fields[vol.Required("default", default=DEFAULT_GENERAL)] = _default_select()
+        fields[vol.Optional("dedup", default=0)] = NumberSelector(
+            NumberSelectorConfig(
+                min=0, max=DEDUP_MAX, step=1, mode=NumberSelectorMode.BOX,
+                unit_of_measurement="хв",
+            )
+        )
         fields[vol.Optional("service", default=False)] = BooleanSelector()
         return vol.Schema(fields)
 
@@ -305,6 +321,7 @@ class CategoryFlow(ConfigSubentryFlow):
             **sub.data,
             "default": sub.data.get("default", DEFAULT_GENERAL),
             "service": sub.data.get("service", False),
+            "dedup": sub.data.get("dedup", 0),
         }
         return self.async_show_form(
             step_id="reconfigure",
@@ -379,6 +396,27 @@ class RoutesFlow(OptionsFlow):
     async def async_step_init(self, user_input=None):
         if self.config_entry.data.get("kind") != KIND_CATEGORIES:
             return self.async_abort(reason="routes_on_categories")
+        return self.async_show_menu(step_id="init", menu_options=["routes", "settings"])
+
+    async def async_step_settings(self, user_input=None):
+        cur = settings_of(self.hass)
+        if user_input is not None:
+            new = deepcopy(dict(self.config_entry.options))
+            new["settings"] = {"expire_hours": float(user_input["expire_hours"])}
+            return self.async_create_entry(data=new)
+        schema = vol.Schema(
+            {
+                vol.Required("expire_hours", default=cur["expire_hours"]): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0.1, max=720, step=0.1, mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="год",
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="settings", data_schema=schema)
+
+    async def async_step_routes(self, user_input=None):
         people = persons(self.hass)
         if not people:
             return self.async_abort(reason="no_users")
@@ -400,9 +438,11 @@ class RoutesFlow(OptionsFlow):
                     for cid in self._cats()
                 },
             }
+            if cur.get("quiet"):  # тихі години редагуються на сторінці, тут їх лишаємо
+                self._draft["quiet"] = cur["quiet"]
             return await self.async_step_pick()
         return self.async_show_form(
-            step_id="init",
+            step_id="routes",
             data_schema=vol.Schema({vol.Required("user"): _select(people)}),
         )
 
