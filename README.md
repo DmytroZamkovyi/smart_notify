@@ -80,7 +80,7 @@ blocks appear:
 1. **Channels** block, "Add channel": choose what to connect, give it a name
    and an owner. Add one channel per phone, Telegram bot or browser.
    - Owner = a person: used only for that person's routes.
-   - Owner = "Common": used when `notify.smart` is called without `user`.
+   - Owner = "Common": used when `notify.smart` is called with `user: common`.
 2. **Categories** block, "Add category": an ID (latin, digits, `_`) used in
    scripts, and a display name. Optional: parent category (makes it a
    subcategory), title prefix, default for everyone, service flag.
@@ -100,8 +100,8 @@ blocks appear:
   so a message is never silently lost.
 - If every selected channel fails, the error is logged and the message goes to
   the HA panel as a last resort.
-- Without `user`: all "Common" channels; if there are none, everybody.
-- `user: all` sends to every person.
+- Without `user` (or `user: all`): every person separately, by their own routes.
+- `user: common`: only the "Common" channels (one shared message, e.g. a group chat). It can be combined with people: `user: [common, person.alice]`.
 - The same channel is never used twice in one call.
 - `category` is required. An unknown category, or a category that has
   subcategories, makes the action fail with an error (visible in the
@@ -276,6 +276,13 @@ HTML5 push (`html5_notification.clicked`).
   on `/smart-notify`.
 - **Test**: the "Send test" button on `/smart-notify` sends through the person's
   real routes and quiet hours for a chosen category and priority.
+
+## Upgrading to 6.0
+
+**BREAKING**: without `user`, `notify.smart` now sends to every person separately
+(before: to the "Common" channels, and only if there were none, to everybody).
+To keep the old behaviour, add `user: common` to those calls. The `user` field in
+the action form is now a list with "Common channel", "Everybody" and the people.
 
 ## Upgrading to 5.2
 

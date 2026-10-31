@@ -93,10 +93,27 @@ def _service_schema(hass: HomeAssistant) -> dict:
         "description": "Надсилає сповіщення за маршрутами користувачів.",
         "fields": {
             "user": {
-                "name": "Користувач",
-                "description": "Порожньо: загальні канали, а якщо їх немає, усім.",
+                "name": "Отримувачі",
+                "description": (
+                    "Порожньо: кожній людині окремо. «Спільний канал»: лише "
+                    "спільні канали. Можна поєднувати."
+                ),
                 "required": False,
-                "selector": {"entity": {"domain": "person", "multiple": True}},
+                "selector": {
+                    "select": {
+                        "options": [
+                            {"value": "common", "label": "Спільний канал"},
+                            {"value": "all", "label": "Усі люди"},
+                            *(
+                                {"value": f"person.{slug}", "label": name}
+                                for slug, name in persons(hass).items()
+                            ),
+                        ],
+                        "multiple": True,
+                        "custom_value": True,
+                        "mode": "dropdown",
+                    }
+                },
             },
             "category": {
                 "name": "Категорія",

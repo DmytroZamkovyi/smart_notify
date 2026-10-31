@@ -603,50 +603,48 @@ class Notifier:
                 return at_home if presence == "home" else not at_home
             return True
 
-        common_path = False
-        if "all" in users or not users:
-            common = [c for c in channels.values() if c["owner"] == COMMON]
-            if not users and common:
-                common_path = True
-            else:
-                users = list(persons(hass))
+        # «common» окремий отримувач (спільні канали); «all» і порожній список: усі люди
+        want_common = COMMON in users
+        users = [u for u in users if u != COMMON]
+        if "all" in users or not (users or want_common):
+            users = list(persons(hass))
 
-        if common_path:
+        for u in users:
+            if not person_ok(u):
+                results.append({"user": u, "status": "filtered", "channels": []})
+                continue
+            m = self._make_msg(nid, cats, cat, title, message, std, extra, raw, u)
+            if not test and self._dedup_hit(u, cat, window, m):
+                results.append({"user": u, "status": "duplicate", "channels": []})
+                continue
+            cfg = self._quiet_cfg(u)
+            action = "pass"
+            if cfg["enabled"] and self._is_quiet(cfg):
+                action = quiet.behavior_for(cfg, m.priority)
+            if action == "skip":
+                results.append({"user": u, "status": "quiet_skipped", "channels": []})
+                continue
+            if action == "defer":
+                if self._plan(channels, cats, u, cat) is None:
+                    results.append({"user": u, "status": "off", "channels": []})
+                    continue
+                self._enqueue(nid, u, cat, title, message, std, extra, raw)
+                results.append({"user": u, "status": "deferred", "channels": []})
+                continue
+            if action == "silent":
+                m.silent = True
+            self._prepare(m)
+            res = await self._deliver_user(run, channels, cats, u, m)
+            self._after(m, res)
+            results.append(res)
+
+        if want_common:
             if admin_off(cats, cat):
                 results.append({"user": COMMON, "status": "off", "channels": []})
             else:
                 m = self._make_msg(nid, cats, cat, title, message, std, extra, raw, COMMON)
                 self._prepare(m)
                 res = await self._deliver_common(run, channels, m)
-                self._after(m, res)
-                results.append(res)
-        else:
-            for u in users:
-                if not person_ok(u):
-                    results.append({"user": u, "status": "filtered", "channels": []})
-                    continue
-                m = self._make_msg(nid, cats, cat, title, message, std, extra, raw, u)
-                if not test and self._dedup_hit(u, cat, window, m):
-                    results.append({"user": u, "status": "duplicate", "channels": []})
-                    continue
-                cfg = self._quiet_cfg(u)
-                action = "pass"
-                if cfg["enabled"] and self._is_quiet(cfg):
-                    action = quiet.behavior_for(cfg, m.priority)
-                if action == "skip":
-                    results.append({"user": u, "status": "quiet_skipped", "channels": []})
-                    continue
-                if action == "defer":
-                    if self._plan(channels, cats, u, cat) is None:
-                        results.append({"user": u, "status": "off", "channels": []})
-                        continue
-                    self._enqueue(nid, u, cat, title, message, std, extra, raw)
-                    results.append({"user": u, "status": "deferred", "channels": []})
-                    continue
-                if action == "silent":
-                    m.silent = True
-                self._prepare(m)
-                res = await self._deliver_user(run, channels, cats, u, m)
                 self._after(m, res)
                 results.append(res)
 
