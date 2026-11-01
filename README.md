@@ -49,6 +49,9 @@ No helpers, no YAML configuration: everything is set up in the UI.
   outage), set per category on the `/smart-notify` page. Placeholders like
   `{start:in}` are filled at sending time for each person.
 - The action returns a delivery result; recipients can be filtered by presence.
+- **One confirmation for everyone** (6.4): a button press by anyone stops the
+  repeats for all and withdraws the notification elsewhere; the main `data` keys
+  are separate fields in the action form.
 - Native UI only: config entries with subentries, nothing to maintain in YAML.
 
 ## Requirements
@@ -166,7 +169,9 @@ gets its own, Telegram its own).
 | `format` | `plain` (default), `html`, `markdown` (Telegram). With `html`, tags are kept for Telegram and the phone (Android shows basic tags) and removed for the browser, the HA panel and other notify services (`<br>` becomes a new line); a `parse_mode` in the channel's own data is left untouched. iOS shows tags literally. |
 | `sticky` | The notification is not dismissed by a tap |
 | `clear` | With `tag`: remove that notification from the phone |
-| `expire` | Lifetime: seconds or `30m`, `2h`, `1d` |
+| `expire` | Time to live: `30m`, `2h`, `1d`, `00:30:00`; **a bare number is seconds** |
+| `repeat` | Repeat until confirmed: `true` or `{every: 5m, max: 8}` (`every: 5` is 5 seconds) |
+| `ack` | Who confirms: `all` (default, one for everyone) or `self` (each their own) |
 | `progress` | `0..100` or `{value, max}` |
 
 | Channel | Mapping |
@@ -257,10 +262,17 @@ so a button of someone else's or an old notification does nothing; tokens live 7
 
 **Repeat until confirmed.** `repeat: true` or `repeat: {every: 10m, max: 20}` in
 `data` resends the notification until any of its buttons is pressed (a "Confirm"
-button is added if there are no buttons). For the common channel any press stops
-it, for a personal channel only that person's press. Defaults are in Options,
-"General settings" (10 min, 20 times). Repeats stop at `expire`, and are held
-during quiet hours (except `critical`).
+button is added if there are no buttons). **A bare number in `every` is seconds**:
+write `5m`, `1h` or `00:05:00`. Defaults are in Options, "General settings"
+(10 min, 20 times). Repeats stop at `expire`, and are held during quiet hours
+(except `critical`).
+
+**Who confirms (6.4).** By default (`ack: all`) a button press by anyone stops
+the repeats for every recipient of that call, and what was sent is withdrawn
+everywhere: the phone notification is cleared (by `tag`), the Telegram message
+gets a "✅ <button title> · <who> · <time>" mark and loses its buttons, the HA
+panel notification is dismissed. `ack: self`: as before 6.4, each person confirms
+only their own. The `smart_notify_action` event has a `scope` field (`all` or `self`).
 
 **Delivery retry.** If every channel of a person failed, a persistent notification
 appears in HA at once (as before) and delivery is retried every 2 minutes, at most
@@ -270,6 +282,33 @@ removed; after the last failed retry it stays. Retries stop at `expire`.
 The button event names come from the Companion app
 (`mobile_app_notification_action`), Telegram (`telegram_callback`) and
 HTML5 push (`html5_notification.clicked`).
+
+## Action form fields (6.4)
+
+The most used `data` keys are separate fields in the action form: **Priority**
+(`priority`), **Tag** (`tag`), **Buttons** (`actions`), **Repeat every**
+(`repeat_every`) and **Repeat count** (`repeat_max`), **Who confirms** (`ack`),
+**Stale after** (`expire`), **Image** (`image`), **Link on tap** (`url`),
+**Text format** (`format`), **Sticky** (`sticky`), **Clear** (`clear`). In YAML
+they go on the top level next to `category` and can be templates. A field wins
+over the same key in `data`; an empty field is ignored. `data` stays for the rest
+(`progress`, `vars`, channel keys).
+
+The form uses a duration picker; in YAML write `5m`, `1h` or `00:05:00` for
+`repeat_every` and `expire` (a bare number is seconds).
+
+```yaml
+action: notify.smart
+data:
+  category: pets
+  title: Change the water
+  message: Time to change the water
+  tag: water
+  actions:
+    - {title: Done, id: water_done}
+  repeat_every: 5m
+  repeat_max: 8
+```
 
 ## Reminders before an event (6.3)
 

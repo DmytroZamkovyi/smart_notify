@@ -21,7 +21,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from . import content, quiet, reminders
-from .channels import Msg, clear_refs, deliver, persistent_dismiss
+from .channels import Msg, clear_refs, deliver, mark_done, persistent_dismiss
 from .const import COMMON, DOMAIN, FALLBACK_SOURCE
 from .helpers import (
     PERSISTENT,
@@ -74,6 +74,7 @@ class State:
             "retries": [],
             "reminders": [],
             "sent": {},
+            "acks": {},
         }
 
     async def load(self) -> None:
@@ -267,6 +268,7 @@ class Notifier:
         try:
             refs = await deliver(self.hass, self.state, source, m)
             run.refs.extend(refs)
+            self._track(m, refs)
             run.attempted[source] = True
             rec.append({"channel": name, "status": "sent"})
         except Exception as err:  # noqa: BLE001
@@ -335,6 +337,9 @@ class Notifier:
     def _prune_tokens(self, now: float) -> None:
         tokens = self.state.data["tokens"]
         old = [t for t, v in tokens.items() if now - v.get("ts", 0) > TOKEN_TTL]
+        acks = self.state.data["acks"]
+        for nid in [n for n, v in acks.items() if now - v.get("ts", 0) > TOKEN_TTL]:
+            del acks[nid]
         for t in old:
             del tokens[t]
         if old:
@@ -355,6 +360,24 @@ class Notifier:
                 "ts": time.time(),
             }
             self.state.save()
+
+    def _track(self, m: Msg, refs: list[dict]) -> None:
+        """Запам'ятовує надіслане з кнопками, щоб після підтвердження зняти його в усіх."""
+        if not m.token or m.std.get("clear"):
+            return
+        refs = [r for r in refs if r and r.get("kind") in ("phone", "telegram", "persistent")]
+        acks = self.state.data["acks"]
+        rec = acks.get(m.id)
+        if rec is None:
+            rec = acks[m.id] = {
+                "ts": time.time(),
+                "scope": m.std.get("ack", "all"),
+                "titles": {a["id"]: a["title"] for a in m.std.get("actions", []) if a.get("id")},
+                "users": {},
+            }
+        if refs:
+            rec["users"].setdefault(m.user, []).extend(refs)
+        self.state.save()
 
     def _record(self, m: Msg) -> dict:
         return {
@@ -533,9 +556,35 @@ class Notifier:
         info = self.state.data["tokens"].get(token)
         if info is None:
             return
-        for rec in [r for r in self.state.data["repeats"] if r.get("token") == token]:
-            self._drop("repeat", rec)
         user = info["user"]
+        nid = info["id"]
+        ack = self.state.data["acks"].get(nid) or {}
+        scope = ack.get("scope", "all")
+        if scope == "all":
+            # підтвердження будь-ким знімає повтори й повтори доставки в усіх отримувачів
+            for rec in [r for r in self.state.data["repeats"] if r.get("nid") == nid]:
+                self._drop("repeat", rec)
+            for rec in [r for r in self.state.data["retries"] if r.get("nid") == nid]:
+                self._drop("retry", rec)
+            refs = [r for lst in ack.get("users", {}).values() for r in lst]
+        else:
+            for rec in [r for r in self.state.data["repeats"] if r.get("token") == token]:
+                self._drop("repeat", rec)
+            refs = list(ack.get("users", {}).get(user, []))
+        if ack and not ack.get("done"):
+            if scope == "all":
+                ack["done"] = True  # «self»: інші ще можуть підтвердити своє
+            title = ack.get("titles", {}).get(action_id) or "Підтверджено"
+            who = self._person_name(user)
+            hhmm = dt_util.now().strftime("%H:%M")
+            mark = f"✅ {title}" + (f" · {who}" if who else "") + f" · {hhmm}"
+            if scope == "all":
+                ack["users"] = {}
+            else:
+                ack["users"].pop(user, None)
+            self.state.save()
+            if refs:
+                self.hass.async_create_task(mark_done(self.hass, refs, mark))
         self.hass.bus.async_fire(
             EVENT_ACTION,
             {
@@ -545,6 +594,7 @@ class Notifier:
                 "tag": info.get("tag"),
                 "channel": channel,
                 "notification_id": info["id"],
+                "scope": scope,
             },
         )
         if channel == "telegram" and event.data.get("id"):

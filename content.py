@@ -30,6 +30,25 @@ STANDARD_KEYS = (
     "expire",
     "progress",
     "repeat",
+    "ack",
+)
+
+ACK_SCOPES = ("all", "self")
+
+# Поля форми дії (верхній рівень виклику), що переносяться в data
+FIELD_KEYS = (
+    "priority",
+    "tag",
+    "actions",
+    "repeat_every",
+    "repeat_max",
+    "ack",
+    "expire",
+    "image",
+    "url",
+    "format",
+    "sticky",
+    "clear",
 )
 
 _PRIORITY_ALIASES = {
@@ -56,6 +75,7 @@ _FORMAT_ALIASES = {
 }
 
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
+_HMS_RE = re.compile(r"^\s*(?:(\d+)\s*(?:d|дн?)\s*)?(\d+):(\d{1,2})(?::(\d{1,2}))?\s*$", re.IGNORECASE)
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -72,16 +92,34 @@ def norm_format(v: Any) -> str:
 
 
 def parse_duration(v: Any) -> float | None:
-    """Секунди з числа або рядка: 90, "90", "30m", "2h", "1d". Некоректне або <=0 -> None."""
+    """Секунди: число (секунди), "90", "30m", "2h", "1d", "00:05:00", {"minutes": 5}. Некоректне або <=0 -> None."""
     if isinstance(v, bool) or v is None:
         return None
     if isinstance(v, (int, float)):
         return float(v) if v > 0 else None
+    if isinstance(v, dict):
+        # селектор тривалості: {days, hours, minutes, seconds, milliseconds}
+        try:
+            sec = (
+                float(v.get("days") or 0) * 86400
+                + float(v.get("hours") or 0) * 3600
+                + float(v.get("minutes") or 0) * 60
+                + float(v.get("seconds") or 0)
+                + float(v.get("milliseconds") or 0) / 1000
+            )
+        except (TypeError, ValueError):
+            return None
+        return sec if sec > 0 else None
     if isinstance(v, str):
         m = _DURATION_RE.match(v)
         if m:
             sec = float(m.group(1)) * _UNITS[m.group(2).lower()]
             return sec if sec > 0 else None
+        m = _HMS_RE.match(v)
+        if m:
+            d, h, mi, se = (int(x) if x else 0 for x in m.groups())
+            sec = d * 86400 + h * 3600 + mi * 60 + se
+            return float(sec) if sec > 0 else None
     return None
 
 
@@ -210,6 +248,10 @@ def parse_data(data: Any) -> tuple[dict, dict]:
     repeat = parse_repeat(data.get("repeat"))
     if repeat is not None:
         std["repeat"] = repeat
+    ack = data.get("ack")
+    if ack is None and isinstance(data.get("repeat"), dict):
+        ack = data["repeat"].get("ack")
+    std["ack"] = "self" if str(ack or "").strip().lower() == "self" else "all"
     extra = {k: v for k, v in data.items() if k not in STANDARD_KEYS}
     return std, extra
 
@@ -316,3 +358,40 @@ def expired_text(text: str, format_: str = "plain") -> str:
     if format_ == "html":
         return f"<b>{mark}</b>\n{text}"
     return f"{mark}\n{text}"
+
+
+def done_text(text: str, mark: str, format_: str = "plain") -> str:
+    """Позначка підтвердження на початку тексту (повідомлення не видаляється)."""
+    if format_ == "html":
+        return f"<b>{escape_html(mark)}</b>\n{text}"
+    return f"{mark}\n{text}"
+
+
+def _blank(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip()) or v == [] or v == {}
+
+
+def merge_fields(call: dict) -> dict:
+    """Переносить поля форми дії (priority, tag, actions, ...) у data.
+
+    Поле має пріоритет над тим самим ключем у data. Порожні значення пропускаються.
+    repeat_every / repeat_max вмикають повтор (зливаються з data.repeat).
+    """
+    out = {k: v for k, v in call.items() if k not in FIELD_KEYS}
+    fields = {k: call[k] for k in FIELD_KEYS if k in call and not _blank(call[k])}
+    if not fields:
+        return out
+    data = dict(out.get("data") or {}) if isinstance(out.get("data"), dict) else {}
+    every = fields.pop("repeat_every", None)
+    mx = fields.pop("repeat_max", None)
+    if every is not None or mx is not None:
+        rep = data.get("repeat")
+        rep = dict(rep) if isinstance(rep, dict) else {}
+        if every is not None:
+            rep["every"] = every
+        if mx is not None:
+            rep["max"] = mx
+        data["repeat"] = rep
+    data.update(fields)
+    out["data"] = data
+    return out

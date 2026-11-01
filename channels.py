@@ -658,4 +658,29 @@ async def clear_refs(hass: HomeAssistant, refs: list[dict]) -> None:
             _LOGGER.warning("Не вдалося зняти сповіщення %s", ref.get("kind"), exc_info=True)
 
 
-__all__ = ["Msg", "deliver", "clear_refs", "FALLBACK_SOURCE"]
+async def mark_done(hass: HomeAssistant, refs: list[dict], mark: str) -> None:
+    """Після підтвердження: телефон очищається, Telegram отримує позначку й втрачає кнопки,
+    панель закривається."""
+    seen: set = set()
+    for ref in refs:
+        key = (
+            ref.get("kind"), ref.get("service"), ref.get("tag"),
+            ref.get("chat_id"), ref.get("message_id"), ref.get("nid"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if ref["kind"] == "phone":
+                await phone_clear(hass, ref)
+            elif ref["kind"] == "telegram":
+                fmt = "html" if ref.get("parse_mode") == "html" else "plain"
+                text = content.done_text(ref.get("text", ""), mark, fmt)
+                await tg_edit(hass, ref, text, ref.get("parse_mode") or "plain_text")
+            elif ref["kind"] == "persistent":
+                await persistent_dismiss(hass, ref)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Не вдалося позначити підтверджене %s", ref.get("kind"), exc_info=True)
+
+
+__all__ = ["Msg", "deliver", "clear_refs", "mark_done", "FALLBACK_SOURCE"]

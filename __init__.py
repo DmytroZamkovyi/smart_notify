@@ -50,6 +50,7 @@ from .helpers import (
     routes_of,
     settings_of,
 )
+from . import content
 from . import quiet as quiet_mod
 from .reminders import norm_leads
 from .routing import (
@@ -77,8 +78,23 @@ SEND_SCHEMA = vol.Schema(
         vol.Optional("data"): dict,
         vol.Optional("presence", default="any"): vol.In(["any", "home", "away"]),
         vol.Optional("exclude"): vol.All(cv.ensure_list, [cv.string]),
+        # поля форми, що переносяться в data (content.merge_fields)
+        vol.Optional("priority"): vol.Any(None, cv.string),
+        vol.Optional("tag"): vol.Any(None, cv.string),
+        vol.Optional("actions"): vol.Any(None, [dict]),
+        vol.Optional("repeat_every"): vol.Any(None, str, int, float, dict),
+        vol.Optional("repeat_max"): vol.Any(None, vol.Coerce(int)),
+        vol.Optional("ack"): vol.Any(None, vol.In(["all", "self"])),
+        vol.Optional("expire"): vol.Any(None, str, int, float, dict),
+        vol.Optional("image"): vol.Any(None, cv.string, dict),
+        vol.Optional("url"): vol.Any(None, cv.string),
+        vol.Optional("format"): vol.Any(None, cv.string),
+        vol.Optional("sticky"): vol.Any(None, cv.boolean),
+        vol.Optional("clear"): vol.Any(None, cv.boolean),
     }
 )
+
+_DURATION_HINT = "Число без одиниці = секунди; у YAML краще 5m, 1h або 00:05:00."
 
 
 def _file_hash(path: Path) -> str:
@@ -187,12 +203,135 @@ def _service_schema(hass: HomeAssistant) -> dict:
                 "required": False,
                 "selector": {"entity": {"domain": "person", "multiple": True}},
             },
+            "priority": {
+                "name": "Пріоритет",
+                "description": "low: без звуку в Telegram; critical: проходить тихі години.",
+                "required": False,
+                "selector": {
+                    "select": {
+                        "options": [
+                            {"value": "low", "label": "Низький"},
+                            {"value": "normal", "label": "Звичайний"},
+                            {"value": "high", "label": "Високий"},
+                            {"value": "critical", "label": "Критичний"},
+                        ],
+                        "mode": "dropdown",
+                    }
+                },
+            },
+            "tag": {
+                "name": "Тег",
+                "description": (
+                    "Однаковий тег замінює сповіщення на телефоні; потрібен для «Прибрати», "
+                    "повторів і нагадувань."
+                ),
+                "required": False,
+                "selector": {"text": {}},
+            },
+            "actions": {
+                "name": "Кнопки",
+                "description": (
+                    "Назва і id (подія smart_notify_action) або посилання. Натискання зупиняє "
+                    "повтори."
+                ),
+                "required": False,
+                "selector": {
+                    "object": {
+                        "multiple": True,
+                        "label_field": "title",
+                        "description_field": "id",
+                        "fields": {
+                            "title": {"label": "Назва", "required": True, "selector": {"text": {}}},
+                            "id": {"label": "Id", "selector": {"text": {}}},
+                            "url": {"label": "Посилання", "selector": {"text": {}}},
+                        },
+                    }
+                },
+            },
+            "repeat_every": {
+                "name": "Повторювати кожні",
+                "description": (
+                    "Повтор до підтвердження (без кнопок додається «Підтвердити»). "
+                    + _DURATION_HINT
+                ),
+                "required": False,
+                "selector": {"duration": {"enable_day": True}},
+            },
+            "repeat_max": {
+                "name": "Скільки разів повторити",
+                "description": "Без значення: з загальних налаштувань.",
+                "required": False,
+                "selector": {"number": {"min": 1, "max": 100, "mode": "box"}},
+            },
+            "ack": {
+                "name": "Хто підтверджує",
+                "description": (
+                    "Усі: натискання будь-ким зупиняє повтори всім і знімає сповіщення в інших. "
+                    "Кожен сам: лише своє."
+                ),
+                "required": False,
+                "selector": {
+                    "select": {
+                        "options": [
+                            {"value": "all", "label": "Один за всіх (типово)"},
+                            {"value": "self", "label": "Кожен сам"},
+                        ],
+                        "mode": "dropdown",
+                    }
+                },
+            },
+            "expire": {
+                "name": "Неактуальне через",
+                "description": (
+                    "Після цього сповіщення знімається (телефон, панель) або позначається "
+                    "в Telegram. " + _DURATION_HINT
+                ),
+                "required": False,
+                "selector": {"duration": {"enable_day": True}},
+            },
+            "image": {
+                "name": "Картинка",
+                "description": "Посилання, /local/..., /media/... або шлях.",
+                "required": False,
+                "selector": {"text": {}},
+            },
+            "url": {
+                "name": "Посилання при натисканні",
+                "description": "Адреса або шлях HA (/lovelace/...).",
+                "required": False,
+                "selector": {"text": {}},
+            },
+            "format": {
+                "name": "Формат тексту",
+                "required": False,
+                "selector": {
+                    "select": {
+                        "options": [
+                            {"value": "plain", "label": "Звичайний текст"},
+                            {"value": "html", "label": "HTML"},
+                            {"value": "markdown", "label": "Markdown"},
+                        ],
+                        "mode": "dropdown",
+                    }
+                },
+            },
+            "sticky": {
+                "name": "Закріплене",
+                "description": "На телефоні не змахується; у браузері чекає дії.",
+                "required": False,
+                "selector": {"boolean": {}},
+            },
+            "clear": {
+                "name": "Прибрати",
+                "description": "Прибрати раніше надіслане з цим тегом (і скасувати заплановане).",
+                "required": False,
+                "selector": {"boolean": {}},
+            },
             "data": {
                 "name": "Дані",
                 "description": (
-                    "image, url, actions, tag, priority, format, sticky, clear, "
-                    "expire, progress, repeat, vars (значення для пропусків) "
-                    "(+ ключі каналів)."
+                    "Решта ключів: progress, vars (значення для пропусків), ключі каналів. "
+                    "Поля вище мають пріоритет над тими самими ключами тут."
                 ),
                 "required": False,
                 "selector": {"object": {}},
@@ -421,7 +560,8 @@ async def _register_common(hass: HomeAssistant) -> None:
         if not data.get("svc"):
 
             async def _send(call: ServiceCall) -> ServiceResponse:
-                return await notifier_of(hass).send(dict(call.data), context=call.context)
+                data = content.merge_fields(dict(call.data))
+                return await notifier_of(hass).send(data, context=call.context)
 
             hass.services.async_register(
                 "notify",
