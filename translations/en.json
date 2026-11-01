@@ -138,7 +138,11 @@
           "repeat_every_min": "Repeat until confirmed: every (min)",
           "repeat_max": "Repeat until confirmed: at most (times)",
           "retry_every_min": "Delivery retry on failure: every (min)",
-          "retry_max": "Delivery retry on failure: at most (times)"
+          "retry_max": "Delivery retry on failure: at most (times)",
+          "rerun_on_start": "Re-run automations with an event time after HA starts"
+        },
+        "data_description": {
+          "rerun_on_start": "So reminders pick up changes made while HA was down. Such automations should do nothing but send notifications."
         }
       }
     },
@@ -161,6 +165,9 @@
     },
     "category_is_group": {
       "message": "Category \"{category}\" has subcategories and cannot be sent to. Use one of its subcategories: {children}."
+    },
+    "invalid_event_time": {
+      "message": "Invalid event time: \"{value}\". Expected an ISO time (e.g. 2026-11-01T08:30:00+02:00) or a Unix timestamp."
     }
   }
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import voluptuous as vol
@@ -27,6 +28,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.start import async_at_started
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .config_flow import sub_title
@@ -49,6 +51,7 @@ from .helpers import (
     settings_of,
 )
 from . import quiet as quiet_mod
+from .reminders import norm_leads
 from .routing import (
     admin_off,
     dedup_minutes,
@@ -70,6 +73,7 @@ SEND_SCHEMA = vol.Schema(
         vol.Required("category"): cv.string,
         vol.Required("message"): cv.string,
         vol.Optional("title"): cv.string,
+        vol.Optional("event_time"): vol.Any(None, str, int, float, datetime),
         vol.Optional("data"): dict,
         vol.Optional("presence", default="any"): vol.In(["any", "home", "away"]),
         vol.Optional("exclude"): vol.All(cv.ensure_list, [cv.string]),
@@ -133,9 +137,25 @@ def _service_schema(hass: HomeAssistant) -> dict:
                     }
                 },
             },
+            "event_time": {
+                "name": "Час події",
+                "description": (
+                    "Для нагадування: коли станеться подія (ISO-час або шаблон). Кожна людина "
+                    "отримає сповіщення за свій час «Нагадувати за» на сторінці «Сповіщення»; "
+                    "не налаштовано: одразу і в момент події. Після перезапуску HA "
+                    "автоматизації з цим полем запускаються повторно, тому вони не повинні "
+                    "робити нічого, крім сповіщень."
+                ),
+                "required": False,
+                "selector": {"text": {}},
+            },
             "message": {
                 "name": "Повідомлення",
-                "description": "Текст сповіщення.",
+                "description": (
+                    "Текст сповіщення. Пропуски заповнюються в момент надсилання: "
+                    "{початок}, {початок:через}, {початок:хв}, {ключ з data.vars}, "
+                    "{ключ:через}, {стан:sensor.x}, {людина}."
+                ),
                 "required": True,
                 "selector": {"text": {"multiline": True}},
             },
@@ -171,7 +191,8 @@ def _service_schema(hass: HomeAssistant) -> dict:
                 "name": "Дані",
                 "description": (
                     "image, url, actions, tag, priority, format, sticky, clear, "
-                    "expire, progress (+ ключі каналів)."
+                    "expire, progress, repeat, vars (значення для пропусків) "
+                    "(+ ключі каналів)."
                 ),
                 "required": False,
                 "selector": {"object": {}},
@@ -256,7 +277,23 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
                 for c in cats
             },
             "quiet": quiet_mod.norm_quiet(r.get("quiet")),
+            "lead": norm_leads(r.get("lead")),
         }
+
+    names = {**persons(hass), COMMON: "Спільний канал"}
+    reminders = [
+        {
+            "id": r["id"],
+            "user": r["user"],
+            "user_name": names.get(r["user"], r["user"]),
+            "category": label(tree, r["category"]) if r["category"] in tree else r["category"],
+            "title": r.get("title") or "",
+            "message": r.get("message") or "",
+            "due": dt_util.as_local(dt_util.utc_from_timestamp(r["due"])).isoformat(),
+            "event": dt_util.as_local(dt_util.utc_from_timestamp(r["event"])).isoformat(),
+        }
+        for r in notifier_of(hass).reminders_for(users)
+    ]
 
     connection.send_result(
         msg["id"],
@@ -269,6 +306,7 @@ def _ws_get(hass: HomeAssistant, connection, msg: dict) -> None:
             "routes": routes,
             "settings": settings_of(hass),
             "queue": {u: notifier_of(hass).queue_count(u) for u in users},
+            "reminders": reminders,
         },
     )
 
@@ -299,18 +337,38 @@ def _ws_set(hass: HomeAssistant, connection, msg: dict) -> None:
         if c in editable:
             new_cats[c] = norm_setting(v, allowed)
 
-    stored_quiet = routes_of(hass).get(user, {}).get("quiet")
+    stored = routes_of(hass).get(user, {})
+    stored_quiet = stored.get("quiet")
+    stored_lead = norm_leads(stored.get("lead"))
+    if "lead" in msg:
+        incoming = norm_leads(msg["lead"])
+        # службові категорії змінює лише адмін
+        new_lead = {i: v for i, v in stored_lead.items() if i in tree and i not in editable}
+        new_lead.update({i: v for i, v in incoming.items() if i in editable})
+    else:
+        new_lead = stored_lead
     new_route = {
         "default": norm_setting(msg["default"], allowed),
         "cats": new_cats,
         "quiet": quiet_mod.norm_quiet(msg["quiet"] if "quiet" in msg else stored_quiet),
+        "lead": new_lead,
     }
     options = dict(entry.options)
     routes = dict(options.get("routes", {}))
     routes[user] = new_route
     options["routes"] = routes
     hass.config_entries.async_update_entry(entry, options=options)
+    notifier_of(hass).recompute(user)
     connection.send_result(msg["id"], new_route)
+
+
+@callback
+def _ws_reminder_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
+    users, _ = _editable(hass, connection)
+    if not notifier_of(hass).cancel_reminder(msg["reminder_id"], set(users)):
+        connection.send_error(msg["id"], "not_found", "Нагадування не знайдено")
+        return
+    connection.send_result(msg["id"], {"ok": True})
 
 
 @callback
@@ -363,7 +421,7 @@ async def _register_common(hass: HomeAssistant) -> None:
         if not data.get("svc"):
 
             async def _send(call: ServiceCall) -> ServiceResponse:
-                return await notifier_of(hass).send(dict(call.data))
+                return await notifier_of(hass).send(dict(call.data), context=call.context)
 
             hass.services.async_register(
                 "notify",
@@ -403,6 +461,18 @@ async def _register_common(hass: HomeAssistant) -> None:
                         vol.Required("default"): dict,
                         vol.Required("cats"): {str: dict},
                         vol.Optional("quiet"): dict,
+                        vol.Optional("lead"): dict,
+                    }
+                ),
+            )
+            websocket_api.async_register_command(
+                hass,
+                "smart_notify/reminder_cancel",
+                _ws_reminder_cancel,
+                websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend(
+                    {
+                        vol.Required("type"): "smart_notify/reminder_cancel",
+                        vol.Required("reminder_id"): str,
                     }
                 ),
             )

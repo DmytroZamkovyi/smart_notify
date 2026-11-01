@@ -198,6 +198,21 @@ def dedup_minutes(cats: dict[str, dict], cid: str) -> int:
     return 0
 
 
+def resolve_lead(cats: dict[str, dict], cid: str, leads: dict | None):
+    """«Нагадувати за» людини: підкатегорія, потім категорія; None це не налаштовано.
+
+    Повертає None, ціле число хвилин або "off".
+    """
+    from .reminders import norm_lead
+
+    leads = leads if isinstance(leads, dict) else {}
+    for i in chain(cats, cid):
+        v = norm_lead(leads.get(i))
+        if v is not None:
+            return v
+    return None
+
+
 def icon_of(cats: dict[str, dict], cid: str) -> str:
     """Значок: власний, інакше батька, інакше порожньо."""
     for i in chain(cats, cid):

@@ -44,6 +44,10 @@ No helpers, no YAML configuration: everything is set up in the UI.
   splitting, expiry, camera snapshots.
 - **Quiet hours** per person (schedule and/or entity condition) with per-priority
   behavior, deferred delivery and summaries; duplicate window; journal; test button.
+- **Reminders before an event** (6.3): pass `event_time`, and every person
+  gets it at their own "Remind me" time (for example 0:30 vs 1:00 before a power
+  outage), set per category on the `/smart-notify` page. Placeholders like
+  `{start:in}` are filled at sending time for each person.
 - The action returns a delivery result; recipients can be filtered by presence.
 - Native UI only: config entries with subentries, nothing to maintain in YAML.
 
@@ -266,6 +270,85 @@ removed; after the last failed retry it stays. Retries stop at `expire`.
 The button event names come from the Companion app
 (`mobile_app_notification_action`), Telegram (`telegram_callback`) and
 HTML5 push (`html5_notification.clicked`).
+
+## Reminders before an event (6.3)
+
+Add **`event_time`** (when the event happens) to a call, and Smart Notify
+schedules the notification for each recipient by their own setting.
+
+**Per person, on `/smart-notify`**, every category card has **"Remind me"**:
+
+| Setting | When the person gets it |
+|---|---|
+| Not set (default) | right away when called **and** at the event time |
+| A duration, e.g. `0:30` | 30 minutes before the event (only) |
+| `0:00` | at the event time only |
+| Don't send reminders | never (status `reminder_off`) |
+
+A subcategory without its own value uses the person's value for the parent
+category. There is no per-category default by design.
+
+```yaml
+alias: Power outage reminder
+mode: queued
+triggers:
+  - trigger: state
+    entity_id: sensor.next_outage_start
+actions:
+  - action: notify.smart
+    data:
+      category: outage_soon
+      event_time: "{{ states('sensor.next_outage_start') }}"
+      title: "Outage {start:in}"
+      message: "No power from {start} to {end}. Back {end:in}."
+      data:
+        tag: outage_soon
+        vars:
+          end: "{{ state_attr('sensor.next_outage_start', 'end') }}"
+```
+
+Alice (0:30) gets "Outage in 30 min" at 08:00, Bob (1:00) gets "Outage in
+1 h" at 07:30, both with their own "Back in …".
+
+**Placeholders** are filled when the notification is actually sent, separately
+for each recipient (they work in any call, not only reminders):
+
+| Placeholder | Example (now 08:00, event 08:30) |
+|---|---|
+| `{start}` / `{початок}` | `08:30` (`02.11 08:30` on another day) |
+| `{start:in}` / `{початок:через}` | `in 30 min` style text: `через 30 хв`, `5 хв тому`, `зараз` |
+| `{start:min}` / `{початок:хв}` | `30` |
+| `{start:%d.%m %H:%M}` | any `strftime` format |
+| `{key}`, `{key:in}`, `{key:min}` | values from `data.vars` (ISO times become times) |
+| `{state:sensor.x}` / `{стан:sensor.x}` | current state with unit, `—` if unavailable |
+| `{person}` / `{людина}` | recipient's name |
+
+Unknown placeholders and other braces are left as is. Relative time is
+rendered in Ukrainian. Jinja in your automation is evaluated at call time, so
+use placeholders for anything relative.
+
+**Replacing and duplicates.** Calls with the same `tag` (or the same category
+without a tag) replace the not-yet-sent reminder. The same event time and text
+is never sent twice, including the "right away" part. `clear: true` with a
+`tag` cancels scheduled reminders. Unless you pass `expire`, a reminder sent
+before the event expires at the event time. Quiet hours and `presence` are
+checked when the reminder is actually sent. Scheduled reminders are listed on
+`/smart-notify` and can be cancelled there.
+
+**After HA restarts**, Smart Notify re-runs enabled automations and scripts
+that call `notify.smart` with `event_time` (20 seconds after start), so
+reminders pick up schedule changes made while HA was down. During that re-run,
+`notify.smart` calls without `event_time` are skipped (`restart_skipped`).
+Can be turned off in Settings → Smart Notify · Categories → Configure → General
+settings.
+
+Limitations of the re-run:
+1. The whole automation runs again: it should only send notifications.
+2. `trigger` is empty during the re-run, do not use `trigger.*` there.
+3. Conditions are checked; a time-of-day condition can block the re-run.
+4. Scripts with `fields` are not re-run; disabled automations are skipped.
+5. It reads automation configs through HA internals and may stop working after
+   an HA update (you will see a warning in the log; everything else still works).
 
 ## Duplicates, journal, test
 

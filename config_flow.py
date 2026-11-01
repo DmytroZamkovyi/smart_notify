@@ -408,6 +408,7 @@ class RoutesFlow(OptionsFlow):
                 "repeat_max": int(user_input["repeat_max"]),
                 "retry_every_min": int(user_input["retry_every_min"]),
                 "retry_max": int(user_input["retry_max"]),
+                "rerun_on_start": bool(user_input.get("rerun_on_start", True)),
             }
             return self.async_create_entry(data=new)
 
@@ -426,6 +427,7 @@ class RoutesFlow(OptionsFlow):
                 vol.Required("repeat_max", default=cur["repeat_max"]): num(1, 1000, 1, ""),
                 vol.Required("retry_every_min", default=cur["retry_every_min"]): num(1, 1440, 1, "хв"),
                 vol.Required("retry_max", default=cur["retry_max"]): num(1, 1000, 1, ""),
+                vol.Required("rerun_on_start", default=cur["rerun_on_start"]): BooleanSelector(),
             }
         )
         return self.async_show_form(step_id="settings", data_schema=schema)
@@ -452,8 +454,9 @@ class RoutesFlow(OptionsFlow):
                     for cid in self._cats()
                 },
             }
-            if cur.get("quiet"):  # тихі години редагуються на сторінці, тут їх лишаємо
-                self._draft["quiet"] = cur["quiet"]
+            for key in ("quiet", "lead"):  # редагуються на сторінці, тут їх лишаємо
+                if cur.get(key):
+                    self._draft[key] = cur[key]
             return await self.async_step_pick()
         return self.async_show_form(
             step_id="routes",

@@ -130,7 +130,7 @@ def settings_of(hass: HomeAssistant) -> dict:
     """Налаштування інтеграції (зберігаються в options запису категорій)."""
     e = entry_of(hass, KIND_CATEGORIES)
     raw = e.options.get("settings", {}) if e else {}
-    out = dict(DEFAULT_SETTINGS)
+    out: dict = dict(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
         try:
             val = float(raw.get(key, out[key]))
@@ -138,4 +138,12 @@ def settings_of(hass: HomeAssistant) -> dict:
             continue
         if val > 0:
             out[key] = val if key in ("expire_hours",) else int(val)
+    out["rerun_on_start"] = bool(raw.get("rerun_on_start", True))
     return out
+
+
+def leads_of(hass: HomeAssistant, user: str) -> dict:
+    """«Нагадувати за» людини: id категорії -> хвилини або "off"."""
+    from .reminders import norm_leads
+
+    return norm_leads(routes_of(hass).get(user, {}).get("lead"))

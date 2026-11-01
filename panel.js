@@ -3,6 +3,26 @@ const PERSISTENT = "persistent";
 
 const empty = () => ({ mode: "inherit", channels: [], fallback: [] });
 
+const toDur = (m) => ({
+  days: Math.floor(m / 1440),
+  hours: Math.floor((m % 1440) / 60),
+  minutes: m % 60,
+  seconds: 0,
+});
+const fromDur = (d) =>
+  Math.max(
+    0,
+    Math.round((+d?.days || 0) * 1440 + (+d?.hours || 0) * 60 + (+d?.minutes || 0) + (+d?.seconds || 0) / 60)
+  );
+const durText = (m) => {
+  const d = toDur(m);
+  const parts = [];
+  if (d.days) parts.push(`${d.days} дн`);
+  if (d.hours) parts.push(`${d.hours} год`);
+  if (d.minutes || !parts.length) parts.push(`${d.minutes} хв`);
+  return parts.join(" ");
+};
+
 const modesCat = (c) => [
   {
     value: "inherit",
@@ -149,6 +169,7 @@ class SmartNotifyPanel extends HTMLElement {
       this._cfg[c.id] = { ...empty(), ...((route.cats || {})[c.id] || {}) };
     });
 
+    this._lead = { ...(route.lead || {}) };
     this._renderTarget(GENERAL, "Загальний маршрут (усі категорії без свого)", true, null);
     this._quiet = JSON.parse(JSON.stringify(route.quiet || {}));
     if (u !== "common") this._renderQuiet();
@@ -157,6 +178,7 @@ class SmartNotifyPanel extends HTMLElement {
       this._renderTarget(c.id, title + (c.service ? " (службова)" : ""), false, c);
     });
 
+    this._renderReminders();
     this._renderTest();
     if (d.is_admin) this._renderJournal();
 
@@ -240,8 +262,116 @@ class SmartNotifyPanel extends HTMLElement {
     });
 
     card.appendChild(f);
+    if (cat) this._renderLead(card, cat);
     this._list.appendChild(card);
     this._forms.push(f);
+  }
+
+  // ------------------------------------------------------- нагадувати за
+
+  _renderLead(card, cat) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const f = document.createElement("ha-form");
+    f.hass = this._hass;
+    const cur = this._lead[cat.id];
+    const state = {
+      lead_mode: cur === undefined || cur === null ? "unset" : cur === "off" ? "off" : "time",
+      lead_time: toDur(typeof cur === "number" ? cur : 30),
+    };
+    const unsetLabel = cat.parent
+      ? `Як у категорії «${cat.parent_name}»`
+      : "Не налаштовано: одразу і в момент події";
+    const draw = () => {
+      const schema = [
+        {
+          name: "lead_mode",
+          selector: {
+            select: {
+              mode: "dropdown",
+              options: [
+                { value: "unset", label: unsetLabel },
+                { value: "time", label: "За вказаний час до події" },
+                { value: "off", label: "Не надсилати нагадування" },
+              ],
+            },
+          },
+        },
+      ];
+      if (state.lead_mode === "time") {
+        schema.push({ name: "lead_time", selector: { duration: { enable_day: true } } });
+      }
+      f.schema = schema;
+      f.data = state;
+    };
+    f.computeLabel = (s) =>
+      ({ lead_mode: "Нагадувати за (для сповіщень із часом події)", lead_time: "За скільки до події" })[
+        s.name
+      ] || s.name;
+    f.computeHelper = (s) =>
+      s.name === "lead_time" ? "0:00 — лише в момент події." : "";
+    draw();
+    f.addEventListener("value-changed", (ev) => {
+      const prev = state.lead_mode;
+      Object.assign(state, ev.detail.value);
+      if (state.lead_mode === "unset") delete this._lead[cat.id];
+      else if (state.lead_mode === "off") this._lead[cat.id] = "off";
+      else this._lead[cat.id] = fromDur(state.lead_time);
+      if (prev !== state.lead_mode) draw();
+      else f.data = state;
+      clearTimeout(this._t);
+      this._t = setTimeout(() => this._save(), 400);
+    });
+    this._forms.push(f);
+    row.appendChild(f);
+    card.appendChild(row);
+  }
+
+  _renderReminders() {
+    const items = this._d.reminders || [];
+    const card = document.createElement("ha-card");
+    const h = document.createElement("h3");
+    h.textContent = "Заплановані нагадування";
+    card.appendChild(h);
+    const box = document.createElement("div");
+    const draw = () => {
+      box.innerHTML = "";
+      if (!items.length) {
+        box.className = "msg";
+        box.textContent = "Немає.";
+        return;
+      }
+      box.className = "";
+      items.forEach((r, idx) => {
+        const d = document.createElement("div");
+        d.className = "log";
+        const head = document.createElement("div");
+        const when = new Date(r.due).toLocaleString();
+        head.textContent = `${when} — ${r.category}: ${r.title || r.message}`;
+        const sm = document.createElement("small");
+        sm.textContent = `${this._d.is_admin ? r.user_name + ", " : ""}подія ${new Date(r.event).toLocaleString()}`;
+        const btn = document.createElement("button");
+        btn.className = "btn";
+        btn.textContent = "Скасувати";
+        btn.onclick = async () => {
+          try {
+            await this._hass.callWS({ type: "smart_notify/reminder_cancel", reminder_id: r.id });
+            items.splice(idx, 1);
+            draw();
+          } catch (e) {
+            this._setStatus("Не скасовано: " + (e.message || e), true);
+          }
+        };
+        d.appendChild(head);
+        d.appendChild(sm);
+        d.appendChild(document.createElement("br"));
+        d.appendChild(btn);
+        box.appendChild(d);
+      });
+    };
+    draw();
+    card.appendChild(box);
+    this._list.appendChild(card);
   }
 
   async _save() {
@@ -252,6 +382,7 @@ class SmartNotifyPanel extends HTMLElement {
         user: this._user,
         default: def,
         cats,
+        lead: this._lead || {},
         ...(this._user === "common" ? {} : { quiet: this._quietOut() }),
       });
       this._d.routes[this._user] = res;
@@ -549,13 +680,18 @@ class SmartNotifyPanel extends HTMLElement {
       quiet_skipped: "пропущено через тихі години",
       deferred: "відкладено до кінця тихих годин",
       expired: "втратило актуальність",
+      scheduled: "заплановано",
+      reminder_off: "нагадування вимкнено",
+      restart_skipped: "пропущено (перезапуск після старту)",
     };
     return (results || [])
       .map((r) => {
         const ch = (r.channels || [])
           .map((c) => `${c.channel}: ${ST[c.status] || c.status}${c.error ? " (" + c.error + ")" : ""}`)
           .join("; ");
-        return `${ST[r.status] || r.status}${ch ? " — " + ch : ""}`;
+        const at = r.at ? ` на ${new Date(r.at).toLocaleString()}` : "";
+        const now = r.sent_now ? " (і надіслано одразу)" : "";
+        return `${ST[r.status] || r.status}${at}${now}${ch ? " — " + ch : ""}`;
       })
       .join("\n");
   }
