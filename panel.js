@@ -683,6 +683,11 @@ class SmartNotifyPanel extends HTMLElement {
       scheduled: "заплановано",
       reminder_off: "нагадування вимкнено",
       restart_skipped: "пропущено (перезапуск після старту)",
+      ack: "натиснув кнопку",
+      ack_unknown: "натискання не розпізнано (старе або чуже)",
+      all: "для всіх",
+      self: "лише для себе",
+      retry_sent: "доставлено з повтору",
     };
     return (results || [])
       .map((r) => {
@@ -691,7 +696,8 @@ class SmartNotifyPanel extends HTMLElement {
           .join("; ");
         const at = r.at ? ` на ${new Date(r.at).toLocaleString()}` : "";
         const now = r.sent_now ? " (і надіслано одразу)" : "";
-        return `${ST[r.status] || r.status}${at}${now}${ch ? " — " + ch : ""}`;
+        const who = r.user && r.user !== "*" ? `${r.user}: ` : "";
+        return `${who}${ST[r.status] || r.status}${at}${now}${ch ? " — " + ch : ""}`;
       })
       .join("\n");
   }

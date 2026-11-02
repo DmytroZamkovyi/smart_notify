@@ -274,6 +274,14 @@ gets a "✅ <button title> · <who> · <time>" mark and loses its buttons, the H
 panel notification is dismissed. `ack: self`: as before 6.4, each person confirms
 only their own. The `smart_notify_action` event has a `scope` field (`all` or `self`).
 
+Since 6.4.1: in Telegram each repeat replaces the previous message (the old one is
+deleted after the new one is delivered), so the chat holds one live message, not one
+per repeat. A message with buttons and no `tag` gets `sn_<id>` so phone repeats replace
+each other and can be cleared. A press also drops what is waiting for quiet hours;
+anything delivered after the press (a repeat in flight) is withdrawn at once; a later
+press by someone else still fires the event. Every press is logged in the journal
+(including unrecognised ones).
+
 **Delivery retry.** If every channel of a person failed, a persistent notification
 appears in HA at once (as before) and delivery is retried every 2 minutes, at most
 5 times (Options). When a retry succeeds, that persistent notification is

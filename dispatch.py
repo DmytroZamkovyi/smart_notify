@@ -21,7 +21,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from . import content, quiet, reminders
-from .channels import Msg, clear_refs, deliver, mark_done, persistent_dismiss
+from .channels import Msg, clear_refs, deliver, mark_done, persistent_dismiss, tg_delete
 from .const import COMMON, DOMAIN, FALLBACK_SOURCE
 from .helpers import (
     PERSISTENT,
@@ -351,6 +351,9 @@ class Notifier:
         if std.get("repeat") is not None and not any(a.get("id") for a in std.get("actions", [])):
             std["actions"] = [*std.get("actions", []), {"title": "Підтвердити", "id": "ack"}]
         if any(a.get("id") for a in std.get("actions", [])):
+            if not std.get("tag"):
+                # без тегу повтори на телефоні не замінюють одне одного, а зняти їх не можна
+                std["tag"] = f"sn_{m.id}"
             m.token = uuid.uuid4().hex[: content.TOKEN_LEN]
             self.state.data["tokens"][m.token] = {
                 "user": m.user,
@@ -375,9 +378,24 @@ class Notifier:
                 "titles": {a["id"]: a["title"] for a in m.std.get("actions", []) if a.get("id")},
                 "users": {},
             }
+        mark = self._done_mark(rec, m.user)
+        if mark is not None:
+            # доставлено вже після підтвердження (повтор був у дорозі): одразу знімаємо
+            if refs:
+                self.hass.async_create_task(mark_done(self.hass, refs, mark))
+            return
         if refs:
             rec["users"].setdefault(m.user, []).extend(refs)
         self.state.save()
+
+    @staticmethod
+    def _done_mark(ack: dict | None, user: str) -> str | None:
+        """Позначка, якщо для цього отримувача сповіщення вже підтверджене, інакше None."""
+        if not ack:
+            return None
+        if ack.get("done"):
+            return ack.get("mark") or "✅"
+        return (ack.get("done_users") or {}).get(user)
 
     def _record(self, m: Msg) -> dict:
         return {
@@ -430,6 +448,8 @@ class Notifier:
     def _start_repeat(self, m: Msg) -> None:
         rep = m.std.get("repeat")
         if rep is None:
+            return
+        if self._done_mark(self.state.data["acks"].get(m.id), m.user) is not None:
             return
         st = settings_of(self.hass)
         every = rep.get("every") or st["repeat_every_min"] * 60
@@ -486,9 +506,17 @@ class Notifier:
             if cfg["enabled"] and self._is_quiet(cfg) and quiet.behavior_for(cfg, m.priority) != "pass":
                 self._sched("repeat", rec, rec["every"])  # тихі години: не рахуємо, чекаємо
                 return
+        if self._done_mark(self.state.data["acks"].get(rec["nid"]), rec["user"]) is not None:
+            self._drop("repeat", rec)
+            return
         rec["count"] += 1
         m.note = f"повтор {rec['count']}"
-        await self._deliver_target(_Run(), channels_of(self.hass), cats, rec["user"], m, False)
+        old = self._telegram_refs(rec["nid"], rec["user"])
+        res = await self._deliver_target(_Run(), channels_of(self.hass), cats, rec["user"], m, False)
+        if res.get("ok") and old:
+            await self._drop_old_telegram(rec["nid"], rec["user"], old)
+        if rec not in self.state.data["repeats"]:
+            return  # підтвердили, поки повтор надсилався
         if rec["count"] >= rec["max"]:
             self._drop("repeat", rec)
         else:
@@ -548,6 +576,32 @@ class Notifier:
     def _ev_telegram(self, event: Any) -> None:
         self._on_action("telegram", event.data.get("data"), event)
 
+    def _telegram_refs(self, nid: str, user: str) -> list[dict]:
+        ack = self.state.data["acks"].get(nid) or {}
+        return [r for r in ack.get("users", {}).get(user) or [] if r.get("kind") == "telegram"]
+
+    async def _drop_old_telegram(self, nid: str, user: str, old: list[dict]) -> None:
+        """Після вдалого повтору видаляє попередні повідомлення Telegram цього отримувача,
+        щоб у чаті висіло одне актуальне, а не по одному на кожен повтор."""
+        ack = self.state.data["acks"].get(nid)
+        if not ack:
+            return
+        lst = ack.get("users", {}).get(user) or []
+        keep = []
+        for ref in lst:
+            if ref not in old:
+                keep.append(ref)
+                continue
+            try:
+                await tg_delete(self.hass, ref)
+            except Exception:  # noqa: BLE001
+                # старше 48 год або немає прав: лишаємо, щоб потім позначити «✅»
+                _LOGGER.debug("Не вдалося видалити попередній повтор у Telegram", exc_info=True)
+                keep.append(ref)
+        if len(keep) != len(lst):
+            ack["users"][user] = keep
+            self.state.save()
+
     def _on_action(self, channel: str, raw: Any, event: Any) -> None:
         dec = content.decode_action(raw)
         if dec is None:
@@ -555,36 +609,63 @@ class Notifier:
         token, action_id = dec
         info = self.state.data["tokens"].get(token)
         if info is None:
+            _LOGGER.warning("Натискання з невідомим токеном (%s, %s): проігноровано", channel, raw)
+            self._journal(
+                {
+                    "ts": time.time(), "id": "", "category": "",
+                    "title": f"Натискання не розпізнано ({channel})", "message": str(raw),
+                    "priority": "normal", "test": False,
+                    "results": [{"user": "*", "status": "ack_unknown", "channels": []}],
+                }
+            )
             return
         user = info["user"]
         nid = info["id"]
-        ack = self.state.data["acks"].get(nid) or {}
+        acks = self.state.data["acks"]
+        ack = acks.get(nid)
+        if ack is None:
+            # стан підтвердження загубився (старе сповіщення): підтверджуємо для всіх
+            ack = acks[nid] = {"ts": time.time(), "scope": "all", "titles": {}, "users": {}}
         scope = ack.get("scope", "all")
+        title = ack.get("titles", {}).get(action_id) or "Підтверджено"
+        who = self._person_name(user)
+        hhmm = dt_util.now().strftime("%H:%M")
+        mark = f"✅ {title}" + (f" · {who}" if who else "") + f" · {hhmm}"
+
+        def mine(r: dict) -> bool:
+            return r.get("nid") == nid and (scope == "all" or r.get("user") == user)
+
+        # повтори, повтори доставки й відкладене (тихі години) більше не потрібні
+        for rec in [r for r in self.state.data["repeats"] if mine(r)]:
+            self._drop("repeat", rec)
+        for rec in [r for r in self.state.data["retries"] if mine(r)]:
+            self._drop("retry", rec)
+        queue = self.state.data["queue"]
+        queue[:] = [q for q in queue if not (q.get("id") == nid and (scope == "all" or q.get("user") == user))]
+
         if scope == "all":
-            # підтвердження будь-ким знімає повтори й повтори доставки в усіх отримувачів
-            for rec in [r for r in self.state.data["repeats"] if r.get("nid") == nid]:
-                self._drop("repeat", rec)
-            for rec in [r for r in self.state.data["retries"] if r.get("nid") == nid]:
-                self._drop("retry", rec)
             refs = [r for lst in ack.get("users", {}).values() for r in lst]
+            if not ack.get("done"):
+                ack["done"] = True
+                ack["mark"] = mark
+            ack["users"] = {}
         else:
-            for rec in [r for r in self.state.data["repeats"] if r.get("token") == token]:
-                self._drop("repeat", rec)
             refs = list(ack.get("users", {}).get(user, []))
-        if ack and not ack.get("done"):
-            if scope == "all":
-                ack["done"] = True  # «self»: інші ще можуть підтвердити своє
-            title = ack.get("titles", {}).get(action_id) or "Підтверджено"
-            who = self._person_name(user)
-            hhmm = dt_util.now().strftime("%H:%M")
-            mark = f"✅ {title}" + (f" · {who}" if who else "") + f" · {hhmm}"
-            if scope == "all":
-                ack["users"] = {}
-            else:
-                ack["users"].pop(user, None)
-            self.state.save()
-            if refs:
-                self.hass.async_create_task(mark_done(self.hass, refs, mark))
+            ack.setdefault("done_users", {}).setdefault(user, mark)
+            ack.get("users", {}).pop(user, None)
+        self.state.save()
+        if refs:
+            self.hass.async_create_task(mark_done(self.hass, refs, ack.get("mark") or mark))
+        self._journal(
+            {
+                "ts": time.time(), "id": nid, "category": info["category"],
+                "title": f"Натиснуто «{title}»", "message": "",
+                "priority": "normal", "test": False,
+                "results": [
+                    {"user": user, "status": "ack", "channels": [{"channel": channel, "status": scope}]}
+                ],
+            }
+        )
         self.hass.bus.async_fire(
             EVENT_ACTION,
             {

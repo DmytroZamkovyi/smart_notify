@@ -513,6 +513,20 @@ async def deliver_telegram(
     return refs
 
 
+async def tg_delete(hass: HomeAssistant, ref: dict) -> None:
+    """Видаляє надіслане повідомлення (попередній повтор, щоб у чаті лишалось одне)."""
+    await _call(
+        hass,
+        "telegram_bot",
+        "delete_message",
+        {
+            "config_entry_id": ref["config_entry_id"],
+            "chat_id": ref["chat_id"],
+            "message_id": ref["message_id"],
+        },
+    )
+
+
 async def tg_mark_expired(hass: HomeAssistant, ref: dict) -> None:
     """Позначає надіслане повідомлення як неактуальне (не видаляє)."""
     fmt = "html" if ref.get("parse_mode") == "html" else "plain"
@@ -683,4 +697,4 @@ async def mark_done(hass: HomeAssistant, refs: list[dict], mark: str) -> None:
             _LOGGER.warning("Не вдалося позначити підтверджене %s", ref.get("kind"), exc_info=True)
 
 
-__all__ = ["Msg", "deliver", "clear_refs", "mark_done", "FALLBACK_SOURCE"]
+__all__ = ["Msg", "deliver", "clear_refs", "mark_done", "tg_delete", "FALLBACK_SOURCE"]
