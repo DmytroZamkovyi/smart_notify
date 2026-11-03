@@ -66,13 +66,17 @@ class SmartNotifyPanel extends HTMLElement {
         .bar { display:flex; align-items:center; gap:8px; height:56px; padding:0 8px;
           background:var(--app-header-background-color, var(--primary-color));
           color:var(--app-header-text-color, #fff); font-size:20px; }
-        .wrap { max-width:640px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+        smart-notify-panel, smart-notify-panel * { box-sizing:border-box; }
+        smart-notify-panel { overflow-x:hidden; }
+        .wrap { max-width:640px; width:100%; margin:0 auto; padding:16px; display:grid;
+          grid-template-columns:minmax(0,1fr); gap:16px; }
+        .wrap > *, #list > *, ha-card, ha-form { min-width:0; max-width:100%; }
         .msg { color:var(--secondary-text-color); padding:8px 4px; }
         .status { height:20px; font-size:.9em; color:var(--secondary-text-color); text-align:right; }
         .status.err { color:var(--error-color); }
         ha-card { padding:16px; display:block; }
         ha-card h3 { margin:0 0 12px; font-weight:500; }
-        #list { display:grid; gap:16px; }
+        #list { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
         ha-card.sub { margin-left:16px; border-left:3px solid var(--primary-color); }
         h3 ha-icon { --mdc-icon-size:20px; margin-right:6px; vertical-align:middle; }
         .row { display:grid; gap:4px; padding:8px 0; border-top:1px solid var(--divider-color); }
