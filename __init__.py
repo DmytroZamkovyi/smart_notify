@@ -231,8 +231,8 @@ def _service_schema(hass: HomeAssistant) -> dict:
             "actions": {
                 "name": "Кнопки",
                 "description": (
-                    "Назва і id (подія smart_notify_action) або посилання. Натискання зупиняє "
-                    "повтори."
+                    "Назва і id (подія smart_notify_action), посилання або скрипт, який запуститься "
+                    "при натисканні. Натискання зупиняє повтори."
                 ),
                 "required": False,
                 "selector": {
@@ -244,6 +244,11 @@ def _service_schema(hass: HomeAssistant) -> dict:
                             "title": {"label": "Назва", "required": True, "selector": {"text": {}}},
                             "id": {"label": "Id", "selector": {"text": {}}},
                             "url": {"label": "Посилання", "selector": {"text": {}}},
+                            "script": {
+                                "label": "Скрипт при натисканні",
+                                "selector": {"entity": {"domain": "script"}},
+                            },
+                            "variables": {"label": "Змінні скрипта", "selector": {"object": {}}},
                         },
                     }
                 },

@@ -154,12 +154,17 @@ def parse_actions(v: Any) -> list[dict]:
     Кнопка з url відкриває посилання, без url надсилає подію з id.
     """
     out: list[dict] = []
-    for item in v if isinstance(v, list) else []:
+    for idx, item in enumerate(v if isinstance(v, list) else []):
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
         aid = str(item.get("id") or item.get("action") or "").strip()
         url = str(item.get("url") or item.get("uri") or "").strip()
+        script = parse_script(item.get("script"))
+        if script and url:
+            script = None  # кнопка-посилання події не надсилає, скрипт не мав би чим запуститись
+        if script and not aid:
+            aid = f"run{idx}"  # короткий id (ліміт даних callback у Telegram 64 байти)
         if not title or not (aid or url):
             continue
         entry = {"title": title}
@@ -169,8 +174,26 @@ def parse_actions(v: Any) -> list[dict]:
                 entry["id"] = aid
         else:
             entry["id"] = aid
+        if script:
+            entry["script"] = script
+            extra = item.get("variables", item.get("script_data"))
+            if isinstance(extra, dict) and extra:
+                entry["variables"] = dict(extra)
         out.append(entry)
     return out
+
+
+def parse_script(v: Any) -> str | None:
+    """entity_id скрипта (`script.name` або просто `name`) або None."""
+    s = str(v or "").strip().lower()
+    if not s:
+        return None
+    if "." not in s:
+        s = f"script.{s}"
+    domain, _, obj = s.partition(".")
+    if domain != "script" or not obj or not all(c.isalnum() or c == "_" for c in obj):
+        return None
+    return s
 
 
 ACTION_PREFIX = "sn_"

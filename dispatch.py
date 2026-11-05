@@ -362,6 +362,13 @@ class Notifier:
                 "id": m.id,
                 "ts": time.time(),
             }
+            scripts = {
+                a["id"]: {"script": a["script"], "variables": a.get("variables") or {}}
+                for a in std.get("actions", [])
+                if a.get("id") and a.get("script")
+            }
+            if scripts:
+                self.state.data["tokens"][m.token]["scripts"] = scripts
             self.state.save()
 
     def _track(self, m: Msg, refs: list[dict]) -> None:
@@ -627,6 +634,9 @@ class Notifier:
             # стан підтвердження загубився (старе сповіщення): підтверджуємо для всіх
             ack = acks[nid] = {"ts": time.time(), "scope": "all", "titles": {}, "users": {}}
         scope = ack.get("scope", "all")
+        # скрипт кнопки запускається лише при першому підтвердженні: для `all` це перше
+        # натискання будь-кого, для `self` перше натискання цієї людини
+        first = not ack.get("done") if scope == "all" else user not in (ack.get("done_users") or {})
         title = ack.get("titles", {}).get(action_id) or "Підтверджено"
         who = self._person_name(user)
         hhmm = dt_util.now().strftime("%H:%M")
@@ -678,8 +688,51 @@ class Notifier:
                 "scope": scope,
             },
         )
+        script = (info.get("scripts") or {}).get(action_id)
+        if script and first:
+            self.hass.async_create_task(
+                self._run_script(
+                    script,
+                    {
+                        "id": action_id,
+                        "person": user,
+                        "category": info["category"],
+                        "tag": info.get("tag"),
+                        "channel": channel,
+                        "notification_id": nid,
+                        "scope": scope,
+                    },
+                )
+            )
         if channel == "telegram" and event.data.get("id"):
             self.hass.async_create_task(self._tg_answer(event.data["id"]))
+
+    async def _run_script(self, script: dict, ctx: dict) -> None:
+        """Запускає скрипт кнопки (script.turn_on, не чекає завершення).
+
+        Скрипт отримує змінні кнопки й контекст натискання (id, person, category, tag, channel,
+        notification_id, scope); змінні кнопки мають пріоритет над контекстом лише за іншими іменами.
+        """
+        entity = script.get("script")
+        variables = {**ctx, **(script.get("variables") or {})}
+        status = "script"
+        try:
+            await self.hass.services.async_call(
+                "script", "turn_on", {"entity_id": entity, "variables": variables}, blocking=False
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Не вдалося запустити скрипт %s з кнопки", entity, exc_info=True)
+            status = "script_failed"
+        self._journal(
+            {
+                "ts": time.time(), "id": ctx["notification_id"], "category": ctx["category"],
+                "title": f"Скрипт кнопки: {entity}", "message": "",
+                "priority": "normal", "test": False,
+                "results": [
+                    {"user": ctx["person"], "status": status, "channels": [{"channel": ctx["channel"], "status": entity}]}
+                ],
+            }
+        )
 
     async def _tg_answer(self, callback_id: str) -> None:
         if not self.hass.services.has_service("telegram_bot", "answer_callback_query"):

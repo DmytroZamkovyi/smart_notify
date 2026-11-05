@@ -163,7 +163,7 @@ gets its own, Telegram its own).
 |---|---|
 | `image` | One picture for all channels: a URL, `/local/file.jpg` (`config/www`), `/media/...` or a file path, or `{camera: camera.gate}` for a camera snapshot |
 | `url` | Opens on tap (phone) or as a "Open" button (Telegram, browser) |
-| `actions` | Buttons: `{title, id}` or a link button `{title, url}` |
+| `actions` | Buttons: `{title, id}`, a link button `{title, url}`, or a script button `{title, script: script.name}` (see "Run a script from a button") |
 | `tag` | Replaces the previous notification with the same tag |
 | `priority` | `low`, `normal`, `high`, `critical` |
 | `format` | `plain` (default), `html`, `markdown` (Telegram). With `html`, tags are kept for Telegram and the phone (Android shows basic tags) and removed for the browser, the HA panel and other notify services (`<br>` becomes a new line); a `parse_mode` in the channel's own data is left untouched. iOS shows tags literally. |
@@ -259,6 +259,26 @@ Event fields: `id` (button id), `person` (the person whose notification it was,
 or `common` for the common channel), `category`, `tag`, `channel` (`phone`,
 `telegram`, `browser`), `notification_id`. Buttons are matched by a hidden token,
 so a button of someone else's or an old notification does nothing; tokens live 7 days.
+
+**Run a script from a button (6.5).** Add `script` to a button and pressing it starts
+that script (`script.turn_on`, it does not wait for the script to finish); the press
+still confirms the notification as any other button. `id` is optional for such a
+button (`run<n>` is generated). Optional `variables` are passed to the script together
+with `id`, `person`, `category`, `tag`, `channel`, `notification_id` and `scope`
+(your variables win on a name clash). The script runs once per confirmation: with
+`ack: all` on the first press by anyone, with `ack: self` on the first press by each
+person. Link buttons (`url`) ignore `script`. Every start is logged in the journal.
+
+```yaml
+action: notify.smart
+data:
+  category: water_refresh
+  message: Time to change the water
+  actions:
+    - title: Done
+      script: script.water_changed
+      variables: {tank: rats}
+```
 
 **Repeat until confirmed.** `repeat: true` or `repeat: {every: 10m, max: 20}` in
 `data` resends the notification until any of its buttons is pressed (a "Confirm"
