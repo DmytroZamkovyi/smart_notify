@@ -376,7 +376,9 @@ use placeholders for anything relative.
 
 **Replacing and duplicates.** Calls with the same `tag` (or the same category
 without a tag) replace the not-yet-sent reminder. The same event time and text
-is never sent twice, including the "right away" part. `clear: true` with a
+is never sent twice. The "right away" part is sent once per event time, even if
+the text changed between calls (Jinja with a state or counter, repeated runs
+after an HA restart). `clear: true` with a
 `tag` cancels scheduled reminders. Unless you pass `expire`, a reminder sent
 before the event expires at the event time. Quiet hours and `presence` are
 checked when the reminder is actually sent. Scheduled reminders are listed on

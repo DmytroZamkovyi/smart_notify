@@ -948,8 +948,10 @@ class Notifier:
         out: dict = {"user": user, "status": "scheduled", "channels": []}
 
         if lead is None:  # не налаштовано: одразу і в момент події
-            if sent.get("now") != fp:
-                res = await self._deliver_rec({**rec, "phase": "now"}, cats)
+            fp_now = reminders.fingerprint_now(event)
+            # Один раз на час події; старий запис (повний відбиток до 6.4.3) теж рахується.
+            if sent.get("now") not in (fp_now, fp):
+                res = await self._deliver_rec({**rec, "phase": "now", "fp": fp_now}, cats)
                 out["sent_now"] = res.get("status") == "sent"
                 out["now_status"] = res.get("status")
                 out["channels"] = res.get("channels", [])

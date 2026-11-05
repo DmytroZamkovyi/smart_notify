@@ -146,6 +146,16 @@ def fingerprint(event: datetime, title: str | None, message: str, variables: dic
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
+def fingerprint_now(event: datetime) -> str:
+    """Відбиток частини «одразу»: лише час події.
+
+    Частина «одразу» повідомляє, що подія взагалі запланована. Якщо в тексті є
+    Jinja, що змінюється між викликами (стан, лічильник, now()), повний відбиток
+    щоразу інший, і кожен перезапуск HA надсилав би її знову.
+    """
+    return hashlib.sha1(f"now|{event.timestamp()}".encode()).hexdigest()
+
+
 # ------------------------------------------------------------------ пропуски
 
 
