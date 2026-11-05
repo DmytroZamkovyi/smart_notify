@@ -1080,6 +1080,10 @@ class Notifier:
         now = now_dt.timestamp()
         event = datetime.fromtimestamp(rec["event"], dt_util.UTC)
         res: dict
+        phase = rec.get("phase", "due")
+        # Окремий id для кожної частини: підтвердження попередження «одразу» (ack: all)
+        # не повинно знімати й гасити повтори частини «в момент події» в усіх отримувачів.
+        nid = f"{rec['nid']}{'n' if phase == 'now' else 'd'}"
         if rec["category"] not in cats:
             res = {"user": user, "status": "off", "channels": []}
         elif now > rec["event"] + reminders.FIRE_GRACE:
@@ -1088,12 +1092,16 @@ class Notifier:
             res = {"user": user, "status": "filtered", "channels": []}
         else:
             std = dict(rec["std"])
+            if phase == "now":
+                # Попередження «одразу» без повторів: повтор до підтвердження стосується
+                # самої події, а не повідомлення «подія о 21:00» за кілька годин до неї.
+                std.pop("repeat", None)
             if not std.get("expire") and rec["event"] - now > 60:
                 std["expire"] = rec["event"] - now  # неактуальне, коли подія настала
             if std.get("expire") and not std.get("tag"):
-                std["tag"] = f"sn_{rec['nid']}"
+                std["tag"] = f"sn_{nid}"
             t, msg = self._render(rec["title"], rec["message"], user, std, event, rec.get("vars") or {})
-            m = self._make_msg(rec["nid"], cats, rec["category"], t, msg, std, rec["extra"], rec["raw"], user)
+            m = self._make_msg(nid, cats, rec["category"], t, msg, std, rec["extra"], rec["raw"], user)
             run = _Run()
             if user == COMMON:
                 self._prepare(m)
@@ -1102,10 +1110,10 @@ class Notifier:
             else:
                 res = await self._pipeline(run, channels_of(self.hass), cats, user, m)
             if std.get("expire") and run.refs:
-                self._register_expiry(rec["nid"], std["expire"], run.refs)
+                self._register_expiry(nid, std["expire"], run.refs)
         if res.get("status") in ("sent", "failed", "deferred", "quiet_skipped", "filtered"):
             sent = self.state.data["sent"].setdefault(rec["key"], {})
-            sent[rec.get("phase", "due")] = rec["fp"]
+            sent[phase] = rec["fp"]
             sent["until"] = rec["event"] + 86400
             self.state.save()
         if journal:
